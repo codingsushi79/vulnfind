@@ -3,6 +3,7 @@ GitHub Actions, Terraform, nginx, plus end-of-life runtime detection."""
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Iterator, List, Optional
 
@@ -86,6 +87,25 @@ CONFIG_RULES: List[Rule] = [
       "Credentials hard-coded in Terraform end up in VCS and state files.", "Use variables marked sensitive, env vars, or a secrets backend.",
       "CWE-798", TF),
 
+    R("TF-IMDSV1", "EC2 metadata service v1 allowed", S.MEDIUM, r"\bhttp_tokens[ \t]*=[ \t]*\"optional\"",
+      "IMDSv1 lets SSRF bugs steal instance credentials (the Capital One breach).", "Set http_tokens = \"required\".", "CWE-918", TF),
+    R("TF-KMS-NO-ROTATION", "KMS key rotation disabled", S.LOW, r"\benable_key_rotation[ \t]*=[ \t]*false",
+      "Long-lived keys increase the blast radius of a key compromise.", "Set enable_key_rotation = true.", "CWE-320", TF),
+    R("TF-NO-DELETION-PROTECTION", "Database deletion protection disabled", S.LOW, r"\bdeletion_protection[ \t]*=[ \t]*false",
+      "A single mistaken apply (or attacker) can delete the database.", "Set deletion_protection = true for production.", "CWE-693", TF),
+    R("K8S-IMAGE-UNPINNED", "Container image not pinned", S.LOW, r"^[ \t-]*image[ \t]*:[ \t]*['\"]?(?![^\s'\"]*@sha256:)[^\s'\"$:{]+(?::latest)?['\"]?[ \t]*$",
+      "Untagged / :latest images change underneath you and can't be audited.", "Pin a version tag, ideally with @sha256 digest.", "CWE-1357", YAML),
+    R("GHA-SECRETS-INHERIT", "Reusable workflow inherits all secrets", S.LOW, r"^[ \t]*secrets[ \t]*:[ \t]*inherit\b",
+      "Every repository secret is passed to the called workflow.", "Pass only the secrets it needs.", "CWE-250", paths=WORKFLOWS),
+    R("CONFIG-EXTRA-INDEX-URL", "pip --extra-index-url (dependency confusion)", S.MEDIUM, r"(?:^|\s)--?extra-index-url\b|^[ \t]*extra-index-url[ \t]*=",
+      "pip picks the highest version across ALL indexes, so an attacker can publish your private package name on PyPI and win.",
+      "Use a single --index-url that proxies PyPI, or pin hashes (--require-hashes).", "CWE-427",
+      exts=(".txt", ".cfg", ".conf", ".ini", ".toml", ".yml", ".yaml", ".sh"), names=("Dockerfile*", "pip.conf", "requirements*.txt")),
+    R("CONFIG-HTTP-REGISTRY", "Package registry over plain HTTP", S.HIGH,
+      r"(?:registry|index-url|index_url|--index-url|source)[\"']?[ \t]*[=: ][ \t]*[\"']?http://(?!localhost|127\.0\.0\.1)",
+      "Packages downloaded over HTTP can be swapped in transit (man-in-the-middle code execution).", "Use https:// registries.", "CWE-494",
+      exts=(".txt", ".cfg", ".conf", ".ini", ".toml", ".yml", ".yaml", ".json"), names=(".npmrc", ".yarnrc", ".yarnrc.yml", "pip.conf", "Gemfile")),
+
     # ---------------------------------------------------------------- web servers / misc config
     R("NGINX-AUTOINDEX", "Directory listing enabled", S.LOW, r"^[ \t]*autoindex[ \t]+on[ \t]*;", "Directory listing leaks file names.",
       "Set autoindex off.", "CWE-548", names=("nginx.conf", "*.nginx", "*.conf")),
@@ -146,6 +166,12 @@ def _dockerfile_checks(f: SourceFile, text: str) -> Iterator[Finding]:
         if re.match(r"^\s*USER\s+(?:root|0)(?::\S+)?\s*$", l, re.I):
             yield _finding("DOCKER-ROOT-USER", "Container runs as root", S.MEDIUM, f, i + 1, l,
                            "The final USER is root.", "Switch to a non-root user before CMD/ENTRYPOINT.", "CWE-250")
+    copy_all = next((i for i, l in enumerate(lines) if re.match(r"^\s*(?:COPY|ADD)\s+(?:--\S+\s+)*\.\s+\S", l, re.I)), None)
+    if copy_all is not None and f.path and not os.path.exists(os.path.join(os.path.dirname(f.path), ".dockerignore")):
+        yield _finding("DOCKER-NO-DOCKERIGNORE", "COPY . without a .dockerignore", S.MEDIUM, f, copy_all + 1, lines[copy_all],
+                       "The entire build context - .env files, .git history, keys, node_modules - is copied into the image, "
+                       "where anyone who pulls it can read them.",
+                       "Add a .dockerignore (at least: .git, .env*, *.pem, node_modules) or COPY only what the app needs.", "CWE-538")
     if not any(re.match(r"^\s*HEALTHCHECK\s", l, re.I) for l in lines):
         yield _finding("DOCKER-NO-HEALTHCHECK", "No HEALTHCHECK defined", S.INFO, f, None, None,
                        "Without a HEALTHCHECK, orchestrators cannot detect a hung container.", "Add a HEALTHCHECK instruction.")
@@ -157,6 +183,14 @@ _PR_HEAD = re.compile(r"\$\{\{\s*github\.(?:event\.pull_request\.head\.(?:sha|re
 def _workflow_checks(f: SourceFile, text: str) -> Iterator[Finding]:
     if not re.search(r"\.github/workflows/[^/]+\.ya?ml$", f.rel):
         return
+    if re.search(r"(?m)^\s*(?:on:.*\bpull_request\b|-?\s*pull_request\s*:?\s*$)", text):
+        m = re.search(r"(?m)^\s*runs-on\s*:\s*\[?[^\n]*self-hosted", text)
+        if m:
+            yield _finding("GHA-SELF-HOSTED-PR", "Self-hosted runner used for pull requests", S.MEDIUM, f,
+                           text.count("\n", 0, m.start()) + 1, m.group(0),
+                           "Pull requests (including from forks, depending on settings) can run arbitrary code on your self-hosted machine, "
+                           "which usually persists between jobs and sits inside your network.",
+                           "Use GitHub-hosted runners for PRs, or ephemeral, isolated self-hosted runners with fork PR approval required.", "CWE-829")
     if not re.search(r"(?m)^\s*(?:on:.*\bpull_request_target\b|-?\s*pull_request_target\s*:?)", text) \
             and not re.search(r"(?m)^on\s*:\s*\[?[^\n]*pull_request_target", text):
         return
@@ -244,10 +278,29 @@ def _capability_checks(f: SourceFile, text: str) -> Iterator[Finding]:
                                "Drop ALL capabilities and add back only what is strictly required.", "CWE-250")
 
 
+def _remote_admin_ports(found: List[Finding], text: str) -> None:
+    """0.0.0.0/0 ingress on SSH/RDP/database ports is much worse than on 443."""
+    lines = text.splitlines()
+    for fnd in found:
+        if fnd.rule_id != "TF-OPEN-INGRESS" or not fnd.line:
+            continue
+        window = "\n".join(lines[max(0, fnd.line - 8):fnd.line + 3])
+        port = re.search(r"\b(?:from_port|to_port|port)\s*=\s*(22|3389|3306|5432|6379|27017|9200|5984|11211)\b", window)
+        if port:
+            fnd.severity = S.HIGH
+            names = {"22": "SSH", "3389": "RDP", "3306": "MySQL", "5432": "PostgreSQL", "6379": "Redis", "27017": "MongoDB",
+                     "9200": "Elasticsearch", "5984": "CouchDB", "11211": "Memcached"}
+            fnd.title = f"{names[port.group(1)]} (port {port.group(1)}) open to the internet"
+            fnd.description = "An administrative or database port accepts connections from anywhere - a prime target for brute force and exploits."
+
+
 def scan(f: SourceFile) -> Iterator[Finding]:
     text = f.text()
     yield from _capability_checks(f, text)
-    yield from run_rules(CONFIG_RULES, f, "config", text)
+    rule_hits = list(run_rules(CONFIG_RULES, f, "config", text))
+    if f.ext in TF:
+        _remote_admin_ports(rule_hits, text)
+    yield from rule_hits
     if _is_dockerfile(f):
         yield from _dockerfile_checks(f, text)
     yield from _workflow_checks(f, text)

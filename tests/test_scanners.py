@@ -53,7 +53,7 @@ class SecretsTest(unittest.TestCase):
 
 class CodeTest(unittest.TestCase):
     def scan(self, name, text):
-        return list(code.scan(source(name, text)))
+        return list(code.scan(source(name, text), deep=False))
 
     def test_python_rules(self):
         text = (

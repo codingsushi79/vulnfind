@@ -150,3 +150,59 @@ def to_cyclonedx(result: ScanResult) -> str:
     if vulns:
         doc["vulnerabilities"] = vulns
     return json.dumps(doc, indent=2)
+
+
+def _gh_escape(s: str, prop: bool = False) -> str:
+    s = (s or "").replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    return s.replace(":", "%3A").replace(",", "%2C") if prop else s
+
+
+GH_LEVEL = {Severity.CRITICAL: "error", Severity.HIGH: "error", Severity.MEDIUM: "warning",
+            Severity.LOW: "notice", Severity.INFO: "notice"}
+
+
+def to_github(result: ScanResult) -> str:
+    """GitHub Actions workflow commands: findings show up as inline annotations on the PR diff."""
+    out = []
+    for f in result.findings:
+        title = f"[{f.severity.label}] {f.rule_id}: {f.title}"
+        msg = f.description
+        if f.fix:
+            msg += f"\nFix: {f.fix}"
+        loc = f"file={_gh_escape(f.file, True)}" + (f",line={f.line}" if f.line else "")
+        out.append(f"::{GH_LEVEL[f.severity]} {loc},title={_gh_escape(title, True)}::{_gh_escape(msg)}")
+    c = result.counts()
+    out.append(f"vulnfind: grade {result.grade} - {c['CRITICAL']} critical, {c['HIGH']} high, {c['MEDIUM']} medium, {c['LOW']} low")
+    return "\n".join(out)
+
+
+def to_junit(result: ScanResult) -> str:
+    from xml.sax.saxutils import escape, quoteattr
+    cases = []
+    for f in result.findings:
+        name = quoteattr(f"{f.rule_id} {f.location}")
+        body = escape(f"{f.description}\n\nFix: {f.fix or '-'}\n{f.snippet or ''}")
+        cases.append(f'    <testcase classname={quoteattr("vulnfind." + f.category)} name={name}>\n'
+                     f'      <failure type={quoteattr(f.severity.label)} message={quoteattr(f.title)}>{body}</failure>\n'
+                     f"    </testcase>")
+    if not cases:
+        cases.append('    <testcase classname="vulnfind" name="no vulnerabilities found"/>')
+    return (f'<?xml version="1.0" encoding="UTF-8"?>\n<testsuites name="vulnfind" tests="{max(1, len(result.findings))}" '
+            f'failures="{len(result.findings)}" time="{result.duration:.2f}">\n'
+            f'  <testsuite name="vulnfind security scan" tests="{max(1, len(result.findings))}" failures="{len(result.findings)}">\n'
+            + "\n".join(cases) + "\n  </testsuite>\n</testsuites>\n")
+
+
+def to_csv(result: ScanResult) -> str:
+    import csv
+    import io
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["severity", "priority", "category", "rule_id", "title", "file", "line", "package", "version", "fixed",
+                "kev", "epss", "cwe", "fingerprint"])
+    for f in result.findings:
+        x = f.extra
+        w.writerow([f.severity.label, x.get("priority", ""), f.category, f.rule_id, f.title, f.file, f.line or "",
+                    x.get("package", ""), x.get("version", ""), x.get("fixed", "") or "", "yes" if x.get("kev") else "",
+                    x.get("epss", ""), f.cwe or "", f.fingerprint])
+    return buf.getvalue()

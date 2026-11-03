@@ -93,6 +93,35 @@ CODE_RULES: List[Rule] = [
       r"\brequests\.(?:get|post|put|patch|delete|head|request)\((?![^\n]*\btimeout[ \t]*=)[^\n]*\)[ \t]*$",
       "Requests without a timeout can hang forever (resource exhaustion).", "Pass timeout=(connect, read).", "CWE-400", PY),
 
+    R("PY-CSRF-DISABLED", "CSRF protection disabled", S.MEDIUM,
+      r"\bWTF_CSRF_ENABLED[\"']?\]?[ \t]*=[ \t]*False|@csrf_exempt\b|\bcsrf\.exempt\b",
+      "Disabling CSRF protection lets other sites submit state-changing requests as your logged-in users.",
+      "Keep CSRF on; for APIs use token auth (not cookies) instead of exempting views.", "CWE-352", PY),
+    R("PY-COOKIE-INSECURE", "Session/CSRF cookie without Secure/HttpOnly", S.MEDIUM,
+      r"\b(?:SESSION_COOKIE_SECURE|CSRF_COOKIE_SECURE|SESSION_COOKIE_HTTPONLY|REMEMBER_COOKIE_SECURE)[\"']?\]?[ \t]*=[ \t]*False",
+      "Cookies without Secure are sent over plain HTTP; without HttpOnly they can be stolen by XSS.",
+      "Set these to True in production settings.", "CWE-614", PY),
+    R("PY-SSTI", "Template rendered from a dynamic string", S.HIGH,
+      r"\brender_template_string\((?![ \t]*['\"][^'\"\n]*['\"][ \t]*[,)])|\bjinja2\.Template\((?![ \t]*['\"])",
+      "Building templates from strings risks server-side template injection (remote code execution in Jinja2).",
+      "Use render_template() with a file and pass data as variables.", "CWE-1336", PY),
+    R("PY-JWT-NO-VERIFY", "JWT signature verification disabled", S.HIGH,
+      r"\bjwt\.decode\([^\n]*(?:verify[ \t]*=[ \t]*False|[\"']verify_signature[\"'][ \t]*:[ \t]*False)",
+      "Tokens are accepted without checking the signature - anyone can forge them.",
+      "Verify with jwt.decode(token, key, algorithms=['HS256']).", "CWE-347", PY),
+    R("PY-SSH-AUTOADD", "SSH host key verification disabled", S.MEDIUM, r"set_missing_host_key_policy\([ \t]*(?:paramiko\.)?(?:AutoAddPolicy|WarningPolicy)",
+      "Accepting unknown host keys allows man-in-the-middle attacks on SSH connections.",
+      "Load known_hosts and use RejectPolicy.", "CWE-295", PY),
+    R("PY-ARCHIVE-EXTRACT", "Archive extraction without path checks (zip/tar slip)", S.MEDIUM,
+      r"\.extractall\((?![^\n]*filter[ \t]*=)",
+      "Archive members with ../ paths or absolute paths can overwrite files outside the target directory.",
+      "Use tarfile's filter='data' (Python 3.12+) or validate each member path before extracting.", "CWE-22", PY),
+    R("PY-WEAK-TLS", "Obsolete SSL/TLS protocol", S.MEDIUM, r"\bssl\.PROTOCOL_(?:SSLv2|SSLv3|TLSv1|TLSv1_1)\b",
+      "SSLv3/TLS 1.0/1.1 are broken and deprecated.", "Use ssl.create_default_context() (TLS 1.2+).", "CWE-326", PY),
+    R("PY-CORS-ALL", "CORS allows every origin", S.LOW,
+      r"\bCORS_(?:ALLOW_ALL_ORIGINS|ORIGIN_ALLOW_ALL)[ \t]*=[ \t]*True|\bCORS\([^\n]*origins[ \t]*=[ \t]*[\"']\*",
+      "Any website can read your API responses (dangerous with cookies/credentials).", "Allow-list trusted origins.", "CWE-942", PY),
+
     # ---------------------------------------------------------------- JavaScript / TypeScript
     R("JS-EVAL", "Use of eval() / new Function()", S.HIGH,
       r"(?<![\w.$])eval[ \t]*\((?![ \t]*['\"`][^'\"`\n]*['\"`][ \t]*\))|\bnew[ \t]+Function[ \t]*\(",
@@ -101,7 +130,7 @@ CODE_RULES: List[Rule] = [
     R("JS-STRING-TIMER", "setTimeout/setInterval with a string", S.MEDIUM, r"\bset(?:Timeout|Interval)\([ \t]*['\"`]",
       "Passing a string to a timer is an implicit eval.", "Pass a function instead.", "CWE-95", JS),
     R("JS-CHILD-PROCESS", "Command injection via child_process", S.HIGH,
-      r"\b(?:exec|execSync)\([ \t]*(?:`[^`\n]*\$\{|['\"][^'\"\n]*['\"][ \t]*\+|[A-Za-z_$][\w$.]*[ \t]*\+)"
+      r"(?<![\w$.])(?:exec|execSync)\([ \t]*(?:`[^`\n]*\$\{|['\"][^'\"\n]*['\"][ \t]*\+|[A-Za-z_$][\w$.]*[ \t]*\+)"
       r"|\b(?:spawn|spawnSync|execFile)\([^\n]*shell[ \t]*:[ \t]*true",
       "A shell command is assembled from variables; attacker-controlled values can run arbitrary commands.",
       "Use execFile/spawn with an argument array and no shell.", "CWE-78", JS),
@@ -162,6 +191,33 @@ CODE_RULES: List[Rule] = [
     R("JS-POSTMESSAGE-ANY", "postMessage to any origin", S.LOW, r"\.postMessage\([^\n]*,[ \t]*['\"]\*['\"]",
       "Sending postMessage with targetOrigin '*' can leak data to any embedding page.", "Specify the exact target origin.", "CWE-345", JS),
 
+    R("JS-PUBLIC-ENV-SECRET", "Secret exposed through a public env variable", S.HIGH,
+      r"\b(?:NEXT_PUBLIC|VITE|REACT_APP|NUXT_PUBLIC|EXPO_PUBLIC|PUBLIC|GATSBY)_\w*(?:SECRET|PRIVATE|PASSWORD|SERVICE_ROLE|ADMIN_KEY|_TOKEN)\w*",
+      "Variables with these prefixes are inlined into the browser bundle - every visitor can read them.",
+      "Keep the secret server-side (no public prefix) and call it from an API route.", "CWE-200",
+      JS + (".env",), names=(".env", ".env.*")),
+    R("JS-ELECTRON-INSECURE", "Insecure Electron webPreferences", S.HIGH,
+      r"\bnodeIntegration[ \t]*:[ \t]*true|\bcontextIsolation[ \t]*:[ \t]*false|\bwebSecurity[ \t]*:[ \t]*false|\bsandbox[ \t]*:[ \t]*false|allowRunningInsecureContent[ \t]*:[ \t]*true",
+      "Any XSS in the renderer becomes full remote code execution on the user's machine.",
+      "Use contextIsolation: true, nodeIntegration: false, sandbox: true and a preload script.", "CWE-1188", JS),
+    R("JS-COOKIE-INSECURE", "Cookie without Secure / HttpOnly", S.MEDIUM,
+      r"\b(?:httpOnly|secure)[ \t]*:[ \t]*false\b",
+      "Session cookies without HttpOnly can be stolen by XSS; without Secure they leak over HTTP.",
+      "Set httpOnly: true, secure: true, sameSite: 'lax' (or 'strict').", "CWE-614", JS),
+    R("JS-SESSION-SECRET", "Hard-coded session secret", S.HIGH,
+      r"\b(?:session|cookieSession|cookieParser)\([^\n]*secret[ \t]*:[ \t]*['\"][^'\"\n]{3,}['\"]|\bcookieParser\([ \t]*['\"][^'\"\n]{3,}['\"]",
+      "A hard-coded session secret lets anyone who reads the code forge session cookies.", "Load it from the environment.", "CWE-798", JS),
+    R("JS-VM-SANDBOX", "Node vm used as a sandbox", S.MEDIUM, r"\bvm\.(?:runInNewContext|runInContext|runInThisContext|compileFunction)\(|\bnew[ \t]+vm\.Script\(",
+      "The vm module is not a security boundary; untrusted code can escape it.", "Use an isolated process / isolated-vm.", "CWE-265", JS),
+    R("JS-UNSAFE-DESERIALIZE", "Unsafe JavaScript deserialization", S.HIGH, r"""require\([ \t]*['"]node-serialize['"]\)|\bserialize\.unserialize\(""",
+      "node-serialize evaluates functions embedded in the payload (remote code execution).", "Use JSON.parse.", "CWE-502", JS),
+    R("JS-TOKEN-LOCALSTORAGE", "Auth token stored in localStorage", S.LOW,
+      r"\b(?:localStorage|sessionStorage)\.setItem\([ \t]*['\"`][^'\"`\n]*(?:token|jwt|auth|session|password)",
+      "Anything in localStorage is readable by any XSS on the page.", "Prefer HttpOnly, Secure, SameSite cookies.", "CWE-922", JS),
+    R("JS-EXPRESS-NO-HELMET", "Express app without security headers", S.LOW, r"=[ \t]*express\(\)[ \t]*;?[ \t]*$",
+      "Default Express apps send no security headers (CSP, HSTS, frame options) and advertise the framework.",
+      "app.use(helmet()) and app.disable('x-powered-by').", "CWE-693", JS),
+
     # ---------------------------------------------------------------- Go
     R("GO-SQL-INJECTION", "SQL query built with fmt.Sprintf / concatenation", S.HIGH,
       r"\.(?:Query|QueryRow|Exec|QueryContext|QueryRowContext|ExecContext|Raw|Where)\([^\n]*(?:fmt\.Sprintf\(|\"[ \t]*\+[ \t]*\w)",
@@ -182,6 +238,15 @@ CODE_RULES: List[Rule] = [
       "Serve pprof on a separate, internal-only listener.", "CWE-200", GO),
     R("GO-TEMPLATE-UNESCAPED", "XSS: unescaped html/template content", S.MEDIUM, r"\btemplate\.(?:HTML|JS|URL|HTMLAttr)\([ \t]*[A-Za-z_]",
       "Converting a variable to template.HTML disables escaping.", "Let html/template escape the value.", "CWE-79", GO),
+
+    R("GO-FILE-PERMS", "World-writable file permissions", S.MEDIUM, r"\bos\.(?:WriteFile|OpenFile|Chmod|MkdirAll|Mkdir)\([^\n]*\b0o?77[67]\b",
+      "Files created with 0777/0666 can be modified by any local user.", "Use 0600/0644 for files and 0700/0755 for dirs.", "CWE-732", GO),
+    R("GO-HTTP-NO-TIMEOUT", "HTTP server without timeouts", S.LOW, r"\bhttp\.ListenAndServe(?:TLS)?\(",
+      "The default server has no read/write timeouts, enabling slowloris-style resource exhaustion.",
+      "Use &http.Server{ReadHeaderTimeout: 10 * time.Second, ...}.", "CWE-400", GO),
+    R("GO-ZIP-SLIP", "Archive path joined without validation (zip slip)", S.MEDIUM,
+      r"filepath\.Join\([^\n]*\b(?:f|file|hdr|header|zf|entry)\.Name\b",
+      "Archive entries with ../ can write outside the destination.", "Check the cleaned path has the destination as prefix.", "CWE-22", GO),
 
     # ---------------------------------------------------------------- Java / Kotlin
     R("JAVA-SQL-INJECTION", "SQL query built with string concatenation", S.HIGH,
@@ -205,6 +270,15 @@ CODE_RULES: List[Rule] = [
       "CWE-295", JVM),
     R("JAVA-SPEL-INJECTION", "Expression language injection", S.HIGH, r"\bparseExpression\([^\n]*(?:\+|getParameter)",
       "Evaluating SpEL/OGNL built from input leads to remote code execution.", "Never evaluate user-supplied expressions.", "CWE-917", JVM),
+
+    R("JAVA-CSRF-DISABLED", "Spring Security CSRF disabled", S.MEDIUM,
+      r"\.csrf\(\)\.disable\(\)|\.csrf\([ \t]*\w+[ \t]*->[ \t]*\w+\.disable\(\)\)|csrf\(AbstractHttpConfigurer::disable\)",
+      "Browser-based sessions without CSRF protection can be abused by any website.", "Keep CSRF enabled for cookie-authenticated endpoints.", "CWE-352", JVM),
+    R("JAVA-INSECURE-COOKIE", "Cookie without Secure / HttpOnly", S.LOW, r"\.setSecure\([ \t]*false[ \t]*\)|\.setHttpOnly\([ \t]*false[ \t]*\)",
+      "Cookies leak over HTTP or to scripts.", "Set both to true.", "CWE-614", JVM),
+    R("JAVA-WEAK-RANDOM", "java.util.Random for security values", S.MEDIUM,
+      r"(?i)\b\w*(?:token|secret|password|nonce|salt|otp|key)\w*[ \t]*=[^\n]*\bnew[ \t]+Random\(",
+      "java.util.Random is predictable.", "Use SecureRandom.", "CWE-338", JVM),
 
     # ---------------------------------------------------------------- C#
     R("CS-SQL-INJECTION", "SQL query built with concatenation", S.HIGH,
@@ -291,8 +365,32 @@ _SQL_RULES = {"PY-SQL-INJECTION", "JS-SQL-INJECTION", "GO-SQL-INJECTION", "JAVA-
 _PLACEHOLDER = re.compile(r"\$\d|%s|=\s*\?|\(\s*\?|:\w+\b|@\w+")
 
 
-def scan(f: SourceFile) -> Iterator[Finding]:
+def _taint(f: SourceFile):
+    """(taint findings, regex rule IDs they supersede per line)."""
+    from . import taint_js, taint_python
+    if f.ext in PY:
+        mod = taint_python
+    elif f.ext in JS:
+        mod = taint_js
+    else:
+        return [], {}
+    found = list(mod.findings(f.text(), f.rel))
+    superseded = {}
+    by_rule = {c.rule_id: k for k, c in getattr(mod, "CLASSES", {}).items()}
+    by_rule.update({s.rule_id: s.key for s in getattr(mod, "SINKS", [])})
+    for t in found:
+        superseded.setdefault(t.line, set()).update(mod.SUPERSEDES.get(by_rule.get(t.rule_id, ""), set()))
+    return found, superseded
+
+
+def scan(f: SourceFile, deep: bool = True) -> Iterator[Finding]:
+    taint_found, superseded = _taint(f) if deep else ([], {})
+    yield from taint_found
     for finding in run_rules(CODE_RULES, f, "code"):
+        if finding.rule_id == "JS-EXPRESS-NO-HELMET" and "helmet" in f.text():
+            continue
+        if finding.rule_id in superseded.get(finding.line, ()):
+            continue  # a confirmed data flow on this line already explains it
         # Queries that already bind values with placeholders usually interpolate an identifier
         # (table/column name). Still worth a look, but far less likely to be exploitable.
         if finding.rule_id in _SQL_RULES and finding.snippet and _PLACEHOLDER.search(finding.snippet):

@@ -1,137 +1,107 @@
 # vulnfind
 
-A zero-dependency security scanner for any project folder. One command checks:
+A zero-dependency security scanner for any project folder: one command, five scanners, with ranked results that tell you what to fix first.
 
-| Scanner | What it finds |
+```bash
+vulnfind ~/code/my-app
+```
+
+## What it finds
+
+| Scanner | Depth |
 |---|---|
-| **deps** | Known CVEs / GHSA advisories / malicious packages in your dependencies, via [OSV.dev](https://osv.dev) (GitHub Advisories, NVD, PyPA, RustSec, Go vulndb, RubySec…). Shows CVSS score and the exact upgrade command. |
-| **secrets** | 30+ credential formats (AWS, GitHub, GitLab, Stripe, Slack, OpenAI, Anthropic, Google, npm, PyPI, SendGrid, private keys, DB URLs, JWTs…) plus generic passwords/API keys, filtered by entropy and placeholder detection. Secrets are always masked in output. |
-| **code** | ~75 insecure-code rules for Python, JavaScript/TypeScript, Go, Java/Kotlin, C#, PHP, Ruby, C/C++, shell and HTML templates: SQL/command/code injection, XSS, unsafe deserialization, path traversal, SSRF, open redirects, disabled TLS verification, weak crypto, insecure randomness, debug mode… |
-| **config** | Dockerfile, docker-compose, Kubernetes, Terraform, GitHub Actions (pwn requests, script injection, unpinned actions), nginx, weak TLS, and **end-of-life runtimes** (Python, Node, PHP, Ruby, Go). |
-| **files** | Committed key stores, SSH keys, `.env` files, Terraform state, git credentials, DB dumps, heap dumps, world-writable files — with git awareness (tracked vs. ignored vs. about-to-be-committed). |
+| **deps** | Known CVEs, GHSA advisories and **malicious packages** from [OSV.dev](https://osv.dev) across 10 ecosystems. Each advisory is enriched with **CISA KEV** (exploited in the wild, ransomware use) and **EPSS** (probability of exploitation in the next 30 days). Shows the **dependency chain** (`express › body-parser › qs`), whether it's direct or transitive, and whether your code **actually imports it**. Also detects **typosquats** (`reqeusts`, `crossenv`), missing lockfiles and unpinned requirements. |
+| **secrets** | 45+ credential formats (AWS, GitHub, GitLab, Stripe, Slack, OpenAI, Anthropic, Google, npm, PyPI, Docker Hub, Vault, Terraform Cloud, Grafana, Sentry, Notion, Atlassian, private keys, DB URLs, JWTs…) plus generic passwords, filtered by entropy and placeholder detection. With `--history`, every commit is checked, so a secret that was "deleted" but still sits in git history is found, along with the commit that introduced it. Output is always masked. |
+| **code** | **Data-flow (taint) analysis.** For Python it uses the AST: request data, route parameters and CLI input are traced through variables, f-strings and helper functions (arguments *and* return values) into SQL, shell, `eval`, `pickle`/`yaml`, template, filesystem, HTTP and redirect sinks. For JS/TS it's scope-aware variable tracking from `req.query`/`req.body`/`location.search`… into `exec`, SQL, `fs`, `fetch`, `innerHTML`, `res.send`, `RegExp`, Mongo queries, `_.merge`. Sanitisers (`int()`, `shlex.quote`, `parseInt`, `DOMPurify`…) are understood. On top of that, ~100 pattern rules for Python, JS/TS, Go, Java/Kotlin, C#, PHP, Ruby, C/C++, shell and templates (CSRF off, insecure cookies, Electron, `NEXT_PUBLIC_*SECRET`, zip-slip, JWT without verification…). |
+| **config** | Dockerfile (root user, unpinned base, secrets in `ENV`, `COPY .` without `.dockerignore`), compose & Kubernetes (privileged, host namespaces, docker.sock, dangerous capabilities, unpinned images), Terraform (SSH/RDP/DB ports open to the world, public buckets/DBs, IMDSv1, wildcard IAM), GitHub Actions (pwn requests, script injection, unpinned actions, self-hosted runners on PRs), pip dependency confusion, HTTP registries, weak TLS, and **end-of-life runtimes**. |
+| **files** | Key stores, SSH keys, `.env`, Terraform state, git credentials, DB/heap dumps, world-writable files. Each one is marked as tracked, git-ignored, or *about to be committed*. |
 
-Supported lockfiles/manifests: `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock` (v1 + berry), `pnpm-lock.yaml`, `bun.lock`, `package.json` (fallback), `requirements*.txt`, `Pipfile.lock`, `poetry.lock`, `uv.lock`, `pdm.lock`, `go.mod`, `Cargo.lock`, `Gemfile.lock`, `composer.lock`, `pom.xml`, `gradle.lockfile`, `*.csproj`, `packages.lock.json`, `packages.config`, `pubspec.lock`, `mix.lock`.
+Every finding gets a **priority score (0–100)** combining severity, exploitation evidence (KEV/EPSS), reachability, confidence and context, and the report opens with **"Fix these first"**.
 
 ## Install
 
-Needs Python 3.8+ and nothing else.
+Python 3.8+ only, no third-party packages.
 
 ```bash
-pipx install /path/to/vulnfind
+uv tool install --editable /path/to/vulnfind     # or: pipx install /path/to/vulnfind
 ```
 
-or, without installing:
+## Everyday use
 
 ```bash
-python3 -m vulnfind /path/to/project
+vulnfind                              # scan the current folder (live progress on stderr)
+vulnfind -v                           # + full descriptions, data flows, references, every CVE
+vulnfind --history                    # + secrets anywhere in git history
+vulnfind ~/code/*                     # many projects -> one summary table
+vulnfind --scanners deps,secrets      # pick scanners (or --skip code)
+vulnfind --min-severity high          # hide the noise
+vulnfind explain CVE-2021-44228       # details for an advisory or rule
+vulnfind fix                          # dry run: dependency upgrades as a diff
+vulnfind fix --apply                  # write them (requirements.txt, package.json + npm/yarn/pnpm overrides, go.mod)
+vulnfind watch                        # re-scan on save, prints new / resolved issues
+vulnfind sbom -o sbom.cdx.json        # CycloneDX SBOM incl. vulnerabilities
 ```
 
-## Usage
+Try it on the bundled, deliberately vulnerable demo: `vulnfind demo/vulnerable-app`.
 
-```bash
-vulnfind                                # scan the current folder
-vulnfind ~/code/my-app -v               # full descriptions, references, every CVE
-vulnfind --scanners deps                # only dependency CVEs
-vulnfind --skip code,files              # everything except code + file checks
-vulnfind --min-severity high            # hide low/medium noise
-vulnfind -o report.html                 # interactive HTML report
-vulnfind -o results.sarif               # SARIF for GitHub code scanning
-vulnfind -f json | jq '.summary'        # JSON to stdout
-vulnfind -f markdown > SECURITY.md      # Markdown (great for PR comments)
-vulnfind sbom -o sbom.cdx.json          # CycloneDX SBOM (+ known vulns)
-vulnfind rules                          # list all built-in rules
-vulnfind explain GHA-PWN-REQUEST        # details + fix for one rule
-```
+## Automation
 
-Try it on the bundled, deliberately vulnerable demo app:
-
-```bash
-python3 -m vulnfind demo/vulnerable-app
-```
-
-Each run ends with a summary and a security grade (A–F, any critical finding is an F).
-
-### Exit codes (for CI)
-
-| Code | Meaning |
+| Need | Command |
 |---|---|
-| 0 | No findings at or above `--fail-on` (default `high`) |
-| 1 | At least one finding at or above `--fail-on` |
-| 2 | Usage or runtime error |
+| Block bad commits | `vulnfind hook install`: a pre-commit hook that scans the **staged content** for secrets and high-risk code, and keeps any hook you already had. `hook uninstall` removes only its own part. |
+| pre-commit framework | `vulnfind ci pre-commit` prints a config; this repo also ships `.pre-commit-hooks.yaml`. |
+| GitHub Actions | `vulnfind ci github --install git+https://github.com/you/vulnfind --write`: PRs scan only changed files and annotate the diff inline; pushes and a nightly cron run a full scan with history, upload SARIF to the Security tab, and attach an HTML report. |
+| GitLab CI | `vulnfind ci gitlab --write`: JUnit test report + HTML artifact, MR-diff mode. |
+| PR / branch scans | `vulnfind --diff origin/main` (changed + untracked files only) · `vulnfind --staged` |
+| Gate on regressions | `vulnfind -o before.json` … `vulnfind -o after.json` … `vulnfind compare before.json after.json` exits 1 if a new finding ≥ `--fail-on`. |
+| Alerts | `--notify URL` posts a summary to Slack, Discord or Teams (auto-detected) or any JSON webhook. Only for projects with failing findings, unless `--notify-always`. |
+| Cron / scheduled | `vulnfind ~/code/* --quiet-ok --notify https://hooks.slack.com/...` is silent unless something fails. |
+| Config as code | `vulnfind init` writes `.vulnfind.json` (defaults for every flag; flags still win) and `.vulnfindignore`. |
 
-Use `--fail-on critical` to gate only on criticals, or `--fail-on none` to never fail.
+### Output formats
+
+`-f/--format` for stdout, `-o FILE` (repeatable) with format from the extension:
+
+| Format | Flag / extension | For |
+|---|---|---|
+| table | default | humans |
+| json | `-f json`, `.json` | scripts, `compare` |
+| sarif | `.sarif` | GitHub code scanning, IDEs |
+| github | `-f github` | inline PR annotations in Actions |
+| junit | `.xml` | GitLab/Jenkins/Azure test reports |
+| html | `.html` | interactive, filterable report |
+| markdown | `.md` | PR comments, job summaries |
+| csv | `.csv` | spreadsheets |
+| sbom | `.cdx.json` | CycloneDX 1.5 |
+
+### Exit codes
+
+`0` clean · `1` findings at or above `--fail-on` (default `high`; `none` disables) · `2` usage/runtime error.
 
 ## Handling findings
 
-**Inline**: put a comment on the same line, or on its own line directly above:
+- **Inline:** `# vulnfind:ignore [RULE-ID]` on the line or on its own line directly above (`nosec`, `gitleaks:allow` also work).
+- **Project-wide** in `.vulnfindignore`: paths (gitignore syntax), `rule:ID`, `vuln:CVE-…`.
+- **Baseline:** `--write-baseline base.json`, then `--baseline base.json` reports only new issues. Fingerprints ignore line numbers.
 
-```python
-result = eval(trusted_expr)  # vulnfind:ignore PY-EVAL
-```
+Noise control is built in: `.gitignore` is honoured via `git ls-files`, vendored/build folders are skipped, code rules ignore comments and string literals, confirmed data flows replace the weaker pattern hit on the same line, findings in `tests/`/`examples/`/`docs/` drop one severity level, SQL that already uses bind parameters is downgraded, and placeholder or localhost credentials are skipped or marked LOW.
 
-`nosec` and `gitleaks:allow` are also honoured. Without a rule ID, the comment suppresses every rule on that line.
+## Performance
 
-**Project-wide**: create a `.vulnfindignore` (`vulnfind init` writes a template):
+File scanning runs across CPU cores (`-j N`), secret regexes only run on files containing their keyword, and advisory, KEV and EPSS data is cached for 24h in `~/.cache/vulnfind` (`vulnfind cache info|clear`). Use `--no-deep` to skip taint analysis.
 
-```gitignore
-docs/                        # paths, .gitignore syntax
-**/*.min.js
-rule:PY-REQUESTS-NO-TIMEOUT  # disable a rule
-vuln:CVE-2023-12345          # accept an advisory (CVE, GHSA, PYSEC…) - say why!
-```
+## Privacy & network
 
-**Baseline** (adopt in an existing codebase without fixing everything first):
-
-```bash
-vulnfind --write-baseline .vulnfind-baseline.json
-vulnfind --baseline .vulnfind-baseline.json   # only reports new findings
-```
-
-Baseline fingerprints ignore line numbers, so they survive unrelated edits.
-
-### Noise control built in
-
-- `.gitignore` is respected (via `git ls-files` when in a repo); `node_modules`, `vendor`, `dist`, `build`, `.venv` and similar folders are skipped. Use `--no-gitignore` / `--include-vendor` to change that.
-- Code rules ignore comments and matches inside string literals.
-- Findings under `tests/`, `examples/`, `fixtures/`, `docs/`… are lowered one severity level (`--no-test-downgrade` to disable).
-- SQL-injection hits on queries that already use bind parameters are lowered, since the interpolated part is usually a table or column name.
-- Placeholder secrets (`changeme`, `your-api-key`, `${VAR}`, `AKIA…EXAMPLE`, `@host:5432`) are skipped; credentials pointing at `localhost` or Docker service names are reported as LOW.
-- `--no-dev` ignores vulnerabilities in dev-only dependencies.
-
-## GitHub Actions
-
-```yaml
-name: security
-on: [push, pull_request]
-permissions:
-  contents: read
-  security-events: write
-jobs:
-  vulnfind:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with: { python-version: "3.12" }
-      - run: pip install ./path/to/vulnfind   # or from your package index
-      - run: vulnfind --fail-on high -o vulnfind.sarif
-      - uses: github/codeql-action/upload-sarif@v3
-        if: always()
-        with: { sarif_file: vulnfind.sarif }
-```
-
-## Privacy and network use
-
-Only the **deps** scanner uses the network. It sends package names and versions (never source code) to `api.osv.dev`. Advisory details are cached in `~/.cache/vulnfind` for 24 hours. Use `--offline` to skip the lookup (dependencies are still inventoried, and the SBOM still works), or `--no-cache` to force fresh data. Point `VULNFIND_OSV_API` at a mirror if you need to.
+Only dependency checks touch the network: package **names and versions** go to `api.osv.dev` and CVE IDs to `api.first.org` (EPSS), and the public CISA KEV feed is downloaded. Source code never leaves your machine. `--offline` disables all of it (`--no-enrich` disables only KEV/EPSS). `--notify` sends findings to the URL you give it.
 
 ## Limitations
 
-This is a fast, pattern-based scanner, not a full data-flow analyser. It can't tell whether a flagged `eval` really receives user input, so read code findings as "look here" rather than proof. Dependency results are only as precise as your lockfile: commit one. CVSS v4-only advisories get an approximate score.
+Taint analysis works within a single file, and the JS engine works line by line rather than from a full parse, so cross-module flows and unusual code shapes can be missed. Pattern rules can't prove exploitability. Treat code findings as "look here", and the data-flow ones as "look here first". Dependency precision depends on your lockfile. CVSS v4-only advisories get an approximate score.
 
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests
+python3 -m unittest discover -s tests     # 74 tests, no dependencies
 ```
 
-Rules are plain data in `vulnfind/scanners/{secrets,code,iac,files}.py`. To add one, append a `Rule(...)` with an ID, severity, regex, description, fix and the file extensions it applies to.
+Rules are data: add a `Rule(...)` in `vulnfind/scanners/{secrets,code,iac}.py`, a taint sink in `taint_python.py` / `taint_js.py`, or a file pattern in `files.py`.

@@ -112,6 +112,9 @@ class Package:
     line: Optional[int] = None
     dev: bool = False
     approximate: bool = False  # version taken from a range, not a lockfile
+    direct: Optional[bool] = None  # declared by the project itself (None = unknown)
+    via: List[str] = field(default_factory=list)  # dependency chain from the project, e.g. ["express", "body-parser"]
+    imported: Optional[bool] = None  # referenced by an import in the scanned source (None = unknown)
 
     @property
     def purl(self) -> str:
@@ -137,6 +140,7 @@ class ScanResult:
     duration: float = 0.0
     suppressed: int = 0
     below_threshold: int = 0
+    commits_scanned: int = 0
     warnings: List[str] = field(default_factory=list)
     scanners: List[str] = field(default_factory=list)
 

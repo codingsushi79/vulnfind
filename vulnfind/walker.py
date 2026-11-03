@@ -216,16 +216,41 @@ def walk(
     excludes: Iterable[str] = (),
     use_gitignore: bool = True,
     include_vendor: bool = False,
+    only: Optional[Set[str]] = None,
 ) -> Iterator[SourceFile]:
+    """Yield scannable files. Inside a git repo, git's own file list is used (fast, exact
+    .gitignore semantics); otherwise the tree is walked with a gitignore-compatible matcher.
+    `only` restricts the walk to a set of relative paths (diff / pre-commit modes)."""
     root = os.path.abspath(root)
     cli = PathMatcher(excludes)
     excluded_dirs = set(DEFAULT_EXCLUDED_DIRS)
     if include_vendor:
         excluded_dirs -= {"vendor", "node_modules"}
 
+    def skip(rel: str, is_dir: bool = False) -> bool:
+        return ignore.paths.matches(rel, is_dir) or cli.matches(rel, is_dir)
+
     allowed = _git_files(root) if use_gitignore else None
+    if allowed is not None or only is not None:
+        candidates = sorted(only if only is not None else allowed)
+        for rel in candidates:
+            parts = rel.split("/")
+            if any(p in excluded_dirs for p in parts[:-1]) or skip(rel):
+                continue
+            if only is not None and allowed is not None and rel not in allowed:
+                continue
+            full = os.path.join(root, rel)
+            if os.path.islink(full) or not os.path.isfile(full):
+                continue
+            try:
+                size = os.path.getsize(full)
+            except OSError:
+                continue
+            yield SourceFile(full, rel, size)
+        return
+
     fallback = PathMatcher()
-    if use_gitignore and allowed is None:
+    if use_gitignore:
         gi = os.path.join(root, ".gitignore")
         if os.path.isfile(gi):
             with open(gi, encoding="utf-8", errors="replace") as fh:
@@ -240,18 +265,14 @@ def walk(
             rel = rel_dir + d
             if d in excluded_dirs or os.path.islink(os.path.join(dirpath, d)):
                 continue
-            if ignore.paths.matches(rel, True) or cli.matches(rel, True) or fallback.matches(rel, True):
+            if skip(rel, True) or fallback.matches(rel, True):
                 continue
             keep.append(d)
         dirnames[:] = keep
         for fname in sorted(filenames):
             rel = rel_dir + fname
             full = os.path.join(dirpath, fname)
-            if os.path.islink(full):
-                continue
-            if allowed is not None and rel not in allowed:
-                continue
-            if ignore.paths.matches(rel) or cli.matches(rel) or fallback.matches(rel):
+            if os.path.islink(full) or skip(rel) or fallback.matches(rel):
                 continue
             try:
                 size = os.path.getsize(full)

@@ -96,7 +96,7 @@ class OSVClient:
             pass
 
     # -- API ---------------------------------------------------------------
-    def query(self, packages: Sequence[Package]) -> Dict[Tuple[str, str, str], List[dict]]:
+    def query(self, packages: Sequence[Package], progress=None) -> Dict[Tuple[str, str, str], List[dict]]:
         """Return {(ecosystem, name, version): [full vuln records]}."""
         unique = sorted({(p.ecosystem, p.name, p.version) for p in packages})
         hits: Dict[Tuple[str, str, str], List[Tuple[str, Optional[str]]]] = {}
@@ -117,16 +117,21 @@ class OSVClient:
                 pending = next_round
 
         ids = {vid: mod for refs in hits.values() for vid, mod in refs}
-        details = self.fetch(ids)
+        if progress is not None:
+            progress.done(f"Matched {len(unique)} packages against OSV.dev ({len(ids)} advisories)")
+            progress.stage("Fetching advisory details", total=len(ids))
+        details = self.fetch(ids, progress)
         return {k: [details[vid] for vid, _ in refs if vid in details] for k, refs in hits.items()}
 
-    def fetch(self, ids: Dict[str, Optional[str]]) -> Dict[str, dict]:
+    def fetch(self, ids: Dict[str, Optional[str]], progress=None) -> Dict[str, dict]:
         out: Dict[str, dict] = {}
         missing = []
         for vid, mod in ids.items():
             cached = self._cached(vid, mod)
             if cached:
                 out[vid] = cached
+                if progress is not None:
+                    progress.advance(1, vid)
             else:
                 missing.append(vid)
 
@@ -139,6 +144,8 @@ class OSVClient:
         if missing:
             with ThreadPoolExecutor(max_workers=self.workers) as pool:
                 for vid, data in pool.map(one, missing):
+                    if progress is not None:
+                        progress.advance(1, vid)
                     if data:
                         self._store(vid, data)
                         out[vid] = data
@@ -163,6 +170,15 @@ def _vkey(version: str) -> Tuple:
     phase = 2 if re.match(r"(?i)post|p\d|r\d|patch|pl", rest) else 0
     parts = tuple((0, int(p), "") if p.isdigit() else (1, 0, p.lower()) for p in re.split(r"[.\-_+]", rest) if p)
     return (nums, phase, parts)
+
+
+def pick_target(versions) -> Optional[str]:
+    """Highest version among fixes, preferring tagged releases over pre-release/pseudo versions."""
+    vs = [v for v in versions if v]
+    if not vs:
+        return None
+    releases = [v for v in vs if re.fullmatch(r"v?\d+(?:\.\d+)*", v)]
+    return max(releases or vs, key=_vkey)
 
 
 def version_lt(a: str, b: str) -> bool:

@@ -7,7 +7,8 @@ import re
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from .. import osv
-from ..manifests import NPM_LOCKS, parser_for
+from ..depgraph import declared_names
+from ..manifests import NPM_LOCKS, parse_requirements, parser_for
 from ..models import Finding, Package, Severity
 from ..walker import SourceFile
 
@@ -32,7 +33,6 @@ def collect_packages(files: Sequence[SourceFile], warnings: List[str]) -> Tuple[
             continue  # the lockfile has exact versions
         parser = parser_for(f.name)
         if parser is None:
-            from ..manifests import parse_requirements
             parser = parse_requirements
         try:
             found = parser(f.text(), f.rel)
@@ -41,6 +41,16 @@ def collect_packages(files: Sequence[SourceFile], warnings: List[str]) -> Tuple[
             continue
         if found:
             used.append(f.rel)
+            if any(p.direct is None for p in found):
+                declared = declared_names(f.path, found[0].ecosystem)
+                if declared is not None:
+                    norm = (lambda n: re.sub(r"[-_.]+", "-", n).lower()) if found[0].ecosystem == "PyPI" else (lambda n: n)
+                    for p in found:
+                        if p.direct is None:
+                            p.direct = norm(p.name) in declared
+                elif f.name == "package.json" or parser_for(f.name) in (parse_requirements,) or f.name.endswith(("pom.xml", "proj", ".config")):
+                    for p in found:
+                        p.direct = True if p.direct is None else p.direct
             packages.extend(found)
     return packages, used
 
@@ -99,19 +109,22 @@ def build_findings(packages: Sequence[Package], results: Dict[Tuple[str, str, st
                 file=pkg.source, line=pkg.line, snippet=f"{pkg.name}@{pkg.version}",
                 description=desc, fix=fix_text, cwe=cwes[0] if cwes else None, references=refs,
                 extra={"package": pkg.name, "version": pkg.version, "ecosystem": pkg.ecosystem, "fixed": fix,
-                       "aliases": ids, "cvss": score, "vector": vector, "dev": pkg.dev, "purl": pkg.purl},
+                       "aliases": ids, "cvss": score, "vector": vector, "dev": pkg.dev, "purl": pkg.purl,
+                       "direct": pkg.direct, "via": pkg.via, "imported": pkg.imported,
+                       "published": v.get("published", "")[:10] or None},
             ))
     return findings, suppressed
 
 
 def scan(files: Sequence[SourceFile], ignored: Set[str], warnings: List[str], offline: bool = False,
-         use_cache: bool = True, client: Optional[osv.OSVClient] = None):
-    packages, used = collect_packages(files, warnings)
+         use_cache: bool = True, client: Optional[osv.OSVClient] = None, progress=None, packages=None, used=None):
+    if packages is None:
+        packages, used = collect_packages(files, warnings)
     if offline or not packages:
         return packages, used, [], 0
     client = client or osv.OSVClient(use_cache=use_cache)
     try:
-        results = client.query(packages)
+        results = client.query(packages, progress) if progress is not None else client.query(packages)
     except osv.OSVError as e:
         warnings.append(f"dependency CVE lookup failed - {e}. Re-run with network access or use --offline.")
         return packages, used, [], 0

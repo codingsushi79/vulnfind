@@ -37,7 +37,10 @@ input[type=search]{flex:1;min-width:200px;padding:9px 12px;border-radius:10px;bo
 .title{font-weight:600;flex:1;min-width:200px}.loc{color:var(--muted);font-family:ui-monospace,Menlo,monospace;font-size:12px;word-break:break-all}
 pre{background:var(--chip);padding:8px 10px;border-radius:8px;overflow-x:auto;font-size:12px;margin:10px 0 6px;white-space:pre-wrap;word-break:break-all}
 .fix{color:var(--ok);margin:6px 0}.desc{color:var(--muted);margin:6px 0}.meta{font-size:12px;color:var(--muted)}
-.meta a{color:var(--low)}.empty{padding:40px;text-align:center;color:var(--muted)}
+.meta a{color:var(--low)}.flow{margin:8px 0;padding-left:14px;border-left:2px solid var(--crit);font:12px/1.7 ui-monospace,Menlo,monospace;color:var(--muted)}
+.flow div:first-child,.flow div:last-child{color:var(--fg)}.badge{display:inline-block;font-size:11px;font-weight:700;padding:1px 7px;border-radius:999px;margin-left:6px;vertical-align:1px}
+.kev{background:var(--high);color:#fff}.epss{background:var(--chip);color:var(--fg)}.prio{color:var(--muted);font-size:11px;font-variant-numeric:tabular-nums;min-width:28px;text-align:right}
+.ctx{color:var(--muted);font-size:12px;margin:4px 0}.empty{padding:40px;text-align:center;color:var(--muted)}
 .warn{background:color-mix(in srgb,var(--med) 15%,transparent);border-radius:10px;padding:10px 14px;margin-top:14px}
 footer{margin-top:40px;color:var(--muted);font-size:12px}
 </style>
@@ -62,6 +65,7 @@ const SEVS = ['CRITICAL','HIGH','MEDIUM','LOW','INFO'];
 const VAR = {CRITICAL:'--crit',HIGH:'--high',MEDIUM:'--med',LOW:'--low',INFO:'--info'};
 const GRADE = {A:'--ok',B:'--ok',C:'--med',D:'--high',F:'--crit'};
 const state = {sev:new Set(SEVS), cat:null, q:''};
+D.findings.sort((a,b) => (b.extra && b.extra.priority || 0) - (a.extra && a.extra.priority || 0));
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const $ = id => document.getElementById(id);
 const S = D.summary;
@@ -81,12 +85,24 @@ function card(f){
   const ids = (f.extra && f.extra.aliases) ? f.extra.aliases.join(' · ') : f.rule_id;
   const refs = (f.references||[]).slice(0,4).map(r => `<a href="${esc(r)}" target="_blank" rel="noopener">${esc(r.replace(/^https?:\/\//,'').slice(0,60))}</a>`).join(' · ');
   const cvss = f.extra && f.extra.cvss ? ` · CVSS ${f.extra.cvss}` : '';
-  const ctx = f.extra && f.extra.context ? ` · ${esc(f.extra.context)}` : '';
+  const x = f.extra || {};
+  const ctx = x.context ? ` · ${esc(x.context)}` : '';
+  const kev = x.kev ? `<span class="badge kev">EXPLOITED IN THE WILD${x.kev.ransomware ? ' · RANSOMWARE' : ''}</span>` : '';
+  const epss = x.epss >= 0.01 ? `<span class="badge epss">EPSS ${(x.epss*100).toFixed(1)}%</span>` : '';
+  const flow = x.flow ? `<div class="flow">${x.flow.map(s => `<div>${esc(s)}</div>`).join('')}</div>` : '';
+  const dep = [];
+  if (x.direct === true) dep.push('direct dependency'); else if (x.via && x.via.length) dep.push('via ' + x.via.join(' › ')); else if (x.direct === false) dep.push('transitive');
+  if (x.imported === true) dep.push('imported by your code'); else if (x.imported === false) dep.push('not imported directly');
+  if (x.dev) dep.push('dev-only');
+  if (x.history) dep.push(`git history: commit ${String(x.commit).slice(0,10)} by ${x.author} on ${String(x.date).slice(0,10)}`);
+  const depLine = dep.length ? `<div class="ctx">${esc(dep.join(' · '))}</div>` : '';
   const head = f.category === 'dependency'
     ? `<code>${esc(f.snippet)}</code> <span style="color:var(--muted)">${esc(f.rule_id)}</span> ${esc(f.title)}${f.extra.fixed ? ` <span style="color:var(--ok)">→ ${esc(f.extra.fixed)}</span>` : ''}`
     : esc(f.title);
-  return `<details class="f" style="--sev:var(${VAR[f.severity]})"><summary><span class="sev">${f.severity}</span><span class="title">${head}</span><span class="loc">${esc(f.file)}${f.line?':'+f.line:''}</span></summary>
+  return `<details class="f" style="--sev:var(${VAR[f.severity]})"><summary><span class="prio" title="priority">${x.priority ?? ''}</span><span class="sev">${f.severity}</span><span class="title">${head}${kev}${epss}</span><span class="loc">${esc(f.file)}${f.line?':'+f.line:''}</span></summary>
+  ${depLine}
   ${f.snippet ? `<pre>${esc(f.snippet)}</pre>` : ''}
+  ${flow}
   ${f.description ? `<div class="desc">${esc(f.description)}</div>` : ''}
   ${f.fix ? `<div class="fix">✔ ${esc(f.fix)}</div>` : ''}
   <div class="meta">${esc(ids)}${f.cwe ? ' · '+esc(f.cwe) : ''}${cvss}${ctx}${refs ? '<br>'+refs : ''}</div></details>`;

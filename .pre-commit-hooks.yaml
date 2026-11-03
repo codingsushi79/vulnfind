@@ -1,0 +1,11 @@
+# Lets other repos use vulnfind via the pre-commit framework:
+#   - repo: https://github.com/YOUR-USER/vulnfind
+#     rev: v2.0.0
+#     hooks: [{id: vulnfind}]
+- id: vulnfind
+  name: vulnfind security scan
+  description: Block commits that add secrets, injection bugs or risky config.
+  entry: vulnfind --staged --scanners secrets,code,config --fail-on high --no-progress --quiet-ok
+  language: python
+  pass_filenames: false
+  always_run: true

@@ -27,6 +27,7 @@ class Rule:
     paths: Tuple[str, ...] = ()  # relative-path globs this rule applies to
     flags: int = 0
     references: Tuple[str, ...] = ()
+    keywords: Tuple[str, ...] = ()  # lowercase literals; the regex only runs if one is present
     skip_comments: bool = True
     skip_strings: bool = True  # ignore matches that start inside a string literal
     # Optional extra check on the match; return False to drop it.
@@ -55,9 +56,15 @@ def run_rules(rules: Sequence[Rule], f: SourceFile, category: str, text: Optiona
               snippet: Callable[[str, "re.Match[str]"], str] = lambda line, m: line.strip()) -> Iterator[Finding]:
     text = f.text() if text is None else text
     index: Optional[List[int]] = None
+    lower: Optional[str] = None
     for rule in rules:
         if not rule.applies_to(f):
             continue
+        if rule.keywords:
+            if lower is None:
+                lower = text.lower()
+            if not any(k in lower for k in rule.keywords):
+                continue
         seen_lines = set()
         for m in rule.regex.finditer(text):
             if index is None:

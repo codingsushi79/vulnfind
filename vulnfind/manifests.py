@@ -32,6 +32,7 @@ def parse_package_lock(text: str, rel: str) -> List[Package]:
     pkgs: List[Package] = []
     packages = data.get("packages")
     if isinstance(packages, dict) and packages:
+        chains = _npm_chains(packages)
         for key, meta in packages.items():
             if not key or not isinstance(meta, dict) or meta.get("link"):
                 continue
@@ -39,7 +40,10 @@ def parse_package_lock(text: str, rel: str) -> List[Package]:
             version = meta.get("version")
             if not version or not _EXACT_VERSION.match(version):
                 continue
-            pkgs.append(Package(name, version, "npm", rel, _line_of(text, f'"{key}"'), bool(meta.get("dev"))))
+            chain = chains.get(key)
+            pkgs.append(Package(name, version, "npm", rel, _line_of(text, f'"{key}"'), bool(meta.get("dev")),
+                                direct=(chain == []) if chain is not None else None,
+                                via=chain or []))
         return pkgs
 
     def walk_v1(deps: Dict, ) -> None:
@@ -54,6 +58,45 @@ def parse_package_lock(text: str, rel: str) -> List[Package]:
 
     walk_v1(data.get("dependencies") or {})
     return pkgs
+
+
+def _npm_resolve(packages: Dict, from_key: str, name: str) -> Optional[str]:
+    """Node resolution: look in from_key/node_modules, then each ancestor, then the root."""
+    base = from_key
+    while True:
+        candidate = f"{base}/node_modules/{name}" if base else f"node_modules/{name}"
+        if candidate in packages:
+            return candidate
+        if not base:
+            return None
+        idx = base.rfind("/node_modules/")
+        base = base[:idx] if idx != -1 else ""
+
+
+def _npm_chains(packages: Dict) -> Dict[str, List[str]]:
+    """Shortest dependency chain (package names) from the project root to every lockfile entry."""
+    from collections import deque
+
+    root = packages.get("") or {}
+    deps_of = lambda meta: list({**(meta.get("dependencies") or {}), **(meta.get("optionalDependencies") or {}),
+                                 **(meta.get("devDependencies") or {}), **(meta.get("peerDependencies") or {})})
+    chains: Dict[str, List[str]] = {}
+    queue = deque()
+    for name in deps_of(root):
+        key = _npm_resolve(packages, "", name)
+        if key and key not in chains:
+            chains[key] = []
+            queue.append(key)
+    while queue:
+        key = queue.popleft()
+        meta = packages.get(key) or {}
+        here = chains[key] + [key.rsplit("node_modules/", 1)[-1]]
+        for name in deps_of(meta):
+            child = _npm_resolve(packages, key, name)
+            if child and child not in chains:
+                chains[child] = here
+                queue.append(child)
+    return chains
 
 
 def _npm_name_from_spec(spec: str) -> str:
@@ -208,11 +251,11 @@ def parse_go_mod(text: str, rel: str) -> List[Package]:
             m = re.match(r"^require\s+(\S+)\s+(v\S+)", line)
         if m and m.group(1) not in replaced:
             pkgs.append(Package(m.group(1), m.group(2).lstrip("v").replace("+incompatible", ""), "Go", rel, lineno,
-                                dev="// indirect" in raw))
+                                direct="// indirect" not in raw))
     # Go standard library, only when a precise toolchain version is pinned.
     tc = re.search(r"(?m)^toolchain\s+go(\d+\.\d+\.\d+)", text) or re.search(r"(?m)^go\s+(\d+\.\d+\.\d+)\s*$", text)
     if tc:
-        pkgs.append(Package("stdlib", tc.group(1), "Go", rel, text.count("\n", 0, tc.start()) + 1))
+        pkgs.append(Package("stdlib", tc.group(1), "Go", rel, text.count("\n", 0, tc.start()) + 1, direct=True))
     return pkgs
 
 

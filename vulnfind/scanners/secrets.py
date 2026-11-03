@@ -155,6 +155,26 @@ SECRET_RULES: List[Rule] = [
     R("SECRET-HEROKU", "Heroku API key", S.HIGH,
       r"(?i)heroku.{0,20}?['\"=:\s]([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
       "Heroku API key found.", FIX, "CWE-798"),
+    R("SECRET-DOCKERHUB", "Docker Hub access token", S.HIGH, r"\b(dckr_pat_[A-Za-z0-9_\-]{27,})",
+      "Docker Hub personal access token - can push images as you (supply-chain risk).", FIX, "CWE-798"),
+    R("SECRET-VAULT", "HashiCorp Vault token", S.CRITICAL, r"\b(hvs\.[A-Za-z0-9_\-]{90,}|hvb\.[A-Za-z0-9_\-]{90,})",
+      "HashiCorp Vault service/batch token.", FIX, "CWE-798"),
+    R("SECRET-TERRAFORM-CLOUD", "Terraform Cloud token", S.HIGH, r"\b([a-zA-Z0-9]{14}\.atlasv1\.[A-Za-z0-9\-_=]{60,70})",
+      "Terraform Cloud/Enterprise API token.", FIX, "CWE-798"),
+    R("SECRET-PULUMI", "Pulumi access token", S.HIGH, r"\b(pul-[a-f0-9]{40})\b", "Pulumi access token.", FIX, "CWE-798"),
+    R("SECRET-GRAFANA", "Grafana token", S.HIGH, r"\b(glsa_[A-Za-z0-9]{32}_[A-Fa-f0-9]{8}|glc_[A-Za-z0-9+/]{32,}={0,2})",
+      "Grafana service account / Cloud token.", FIX, "CWE-798"),
+    R("SECRET-SENTRY", "Sentry auth token", S.HIGH, r"\b(sntry[us]_[A-Za-z0-9+/=_\-]{50,})", "Sentry auth token.", FIX, "CWE-798"),
+    R("SECRET-NEWRELIC", "New Relic key", S.HIGH, r"\b(NRAK-[A-Z0-9]{27}|NRII-[A-Za-z0-9\-]{32})\b", "New Relic API key.", FIX, "CWE-798"),
+    R("SECRET-NOTION", "Notion integration token", S.HIGH, r"\b(ntn_[A-Za-z0-9]{46}|secret_[A-Za-z0-9]{43})\b",
+      "Notion integration secret.", FIX, "CWE-798"),
+    R("SECRET-ATLASSIAN", "Atlassian API token", S.HIGH, r"\b(ATATT3[A-Za-z0-9_\-=]{150,})", "Atlassian (Jira/Confluence) API token.", FIX, "CWE-798"),
+    R("SECRET-LINEAR", "Linear API key", S.HIGH, r"\b(lin_api_[A-Za-z0-9]{40})\b", "Linear API key.", FIX, "CWE-798"),
+    R("SECRET-POSTMAN", "Postman API key", S.HIGH, r"\b(PMAK-[a-f0-9]{24}-[a-f0-9]{34})\b", "Postman API key.", FIX, "CWE-798"),
+    R("SECRET-DOPPLER", "Doppler token", S.HIGH, r"\b(dp\.(?:pt|st|sa|ct|scim|audit)\.[A-Za-z0-9]{40,44})\b", "Doppler token.", FIX, "CWE-798"),
+    R("SECRET-AGE-KEY", "age encryption secret key", S.CRITICAL, r"\b(AGE-SECRET-KEY-1[0-9A-Z]{58})\b",
+      "age private key - decrypts everything encrypted to it (e.g. SOPS files).", FIX, "CWE-321"),
+    R("SECRET-MAPBOX", "Mapbox secret token", S.HIGH, r"\b(sk\.eyJ[A-Za-z0-9_\-]{60,}\.[A-Za-z0-9_\-]{20,})", "Mapbox secret access token.", FIX, "CWE-798"),
     R("SECRET-JWT", "JSON Web Token", S.MEDIUM,
       r"\b(eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})",
       "A signed JWT is hard-coded. If it is long-lived it acts as a bearer credential.", FIX, "CWE-798"),
@@ -173,8 +193,28 @@ SECRET_RULES: List[Rule] = [
       "A credential-looking value is assigned in source code.", FIX, "CWE-798", validate=_generic_check),
 ]
 
+KEYWORDS = {
+    "SECRET-PRIVATE-KEY": ("private key",), "SECRET-AWS-ACCESS-KEY": ("akia", "asia", "abia", "acca"),
+    "SECRET-AWS-SECRET-KEY": ("aws",), "SECRET-GITHUB-TOKEN": ("ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_"),
+    "SECRET-GITLAB-TOKEN": ("glpat-",), "SECRET-SLACK-TOKEN": ("xox",), "SECRET-SLACK-WEBHOOK": ("hooks.slack.com",),
+    "SECRET-DISCORD-WEBHOOK": ("discord",), "SECRET-STRIPE-LIVE": ("_live_",), "SECRET-STRIPE-TEST": ("sk_test_",),
+    "SECRET-GOOGLE-API-KEY": ("aiza",), "SECRET-GOOGLE-OAUTH-SECRET": ("gocspx-",),
+    "SECRET-GCP-SERVICE-ACCOUNT": ("service_account",), "SECRET-OPENAI-KEY": ("sk-",), "SECRET-ANTHROPIC-KEY": ("sk-ant-",),
+    "SECRET-HUGGINGFACE": ("hf_",), "SECRET-NPM-TOKEN": ("npm_",), "SECRET-NPMRC-AUTH": ("_auth",),
+    "SECRET-PYPI-TOKEN": ("pypi-",), "SECRET-SENDGRID": ("sg.",), "SECRET-MAILGUN": ("key-",), "SECRET-TWILIO": ("sk",),
+    "SECRET-TELEGRAM-BOT": (":aa",), "SECRET-SHOPIFY": ("shpat_", "shpca_", "shppa_", "shpss_"), "SECRET-SQUARE": ("sq0",),
+    "SECRET-DIGITALOCEAN": ("_v1_",), "SECRET-DATABRICKS": ("dapi",), "SECRET-AZURE-STORAGE": ("accountkey=",),
+    "SECRET-HEROKU": ("heroku",), "SECRET-JWT": ("eyj",), "SECRET-DB-URL": ("://",), "SECRET-URL-CREDENTIALS": ("://",),
+    "SECRET-DOCKERHUB": ("dckr_pat_",), "SECRET-VAULT": ("hvs.", "hvb."), "SECRET-TERRAFORM-CLOUD": (".atlasv1.",),
+    "SECRET-PULUMI": ("pul-",), "SECRET-GRAFANA": ("glsa_", "glc_"), "SECRET-SENTRY": ("sntry",), "SECRET-NEWRELIC": ("nrak-", "nrii-"),
+    "SECRET-NOTION": ("ntn_", "secret_"), "SECRET-ATLASSIAN": ("atatt3",), "SECRET-LINEAR": ("lin_api_",), "SECRET-POSTMAN": ("pmak-",),
+    "SECRET-DOPPLER": ("dp.",), "SECRET-AGE-KEY": ("age-secret-key",), "SECRET-MAPBOX": ("sk.eyj",),
+    "SECRET-GENERIC": ("pass", "pwd", "secret", "key", "token"),
+}
+
 # Secrets inside comments are still leaked secrets.
 for _r in SECRET_RULES:
+    _r.keywords = KEYWORDS.get(_r.id, ())
     _r.skip_comments = False
     _r.skip_strings = False
 

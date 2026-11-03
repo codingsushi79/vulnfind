@@ -1,5 +1,7 @@
 # vulnfind
 
+[github.com/codingsushi79/vulnfind](https://github.com/codingsushi79/vulnfind)
+
 A zero-dependency security scanner for any project folder: one command, five scanners, with ranked results that tell you what to fix first.
 
 ```bash
@@ -23,7 +25,7 @@ Every finding gets a **priority score (0–100)** combining severity, exploitati
 Python 3.8+ only, no third-party packages.
 
 ```bash
-uv tool install --editable /path/to/vulnfind     # or: pipx install /path/to/vulnfind
+uv tool install git+https://github.com/codingsushi79/vulnfind       # or: pipx install git+https://github.com/codingsushi79/vulnfind
 ```
 
 ## Everyday use
@@ -50,7 +52,7 @@ Try it on the bundled, deliberately vulnerable demo: `vulnfind demo/vulnerable-a
 |---|---|
 | Block bad commits | `vulnfind hook install`: a pre-commit hook that scans the **staged content** for secrets and high-risk code, and keeps any hook you already had. `hook uninstall` removes only its own part. |
 | pre-commit framework | `vulnfind ci pre-commit` prints a config; this repo also ships `.pre-commit-hooks.yaml`. |
-| GitHub Actions | `vulnfind ci github --install git+https://github.com/you/vulnfind --write`: PRs scan only changed files and annotate the diff inline; pushes and a nightly cron run a full scan with history, upload SARIF to the Security tab, and attach an HTML report. |
+| GitHub Actions | `vulnfind ci github --write`: PRs scan only changed files and annotate the diff inline; pushes and a nightly cron run a full scan with history, upload SARIF to the Security tab, and attach an HTML report. |
 | GitLab CI | `vulnfind ci gitlab --write`: JUnit test report + HTML artifact, MR-diff mode. |
 | PR / branch scans | `vulnfind --diff origin/main` (changed + untracked files only) · `vulnfind --staged` |
 | Gate on regressions | `vulnfind -o before.json` … `vulnfind -o after.json` … `vulnfind compare before.json after.json` exits 1 if a new finding ≥ `--fail-on`. |

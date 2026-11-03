@@ -134,7 +134,7 @@ def build_parser() -> argparse.ArgumentParser:
     c = sub.add_parser("ci", help="generate CI configuration")
     c.add_argument("provider", choices=["github", "gitlab", "pre-commit"])
     c.add_argument("path", nargs="?", default=".")
-    c.add_argument("--install", default="git+https://github.com/YOUR-USER/vulnfind",
+    c.add_argument("--install", default="git+https://github.com/codingsushi79/vulnfind",
                    help="pip install spec for vulnfind in CI (default: %(default)s)")
     c.add_argument("--write", action="store_true", help="write the file into the project instead of printing it")
 
@@ -495,8 +495,6 @@ def cmd_ci(args: argparse.Namespace) -> int:
             "pre-commit": automation.precommit_config}[args.provider]()
     if not args.write:
         print(text)
-        if "YOUR-USER" in text:
-            print("# note: push vulnfind to a git host and pass --install git+https://… so CI can install it", file=sys.stderr)
         return 0
     target = {"github": os.path.join(".github", "workflows", "vulnfind.yml"), "gitlab": "vulnfind.gitlab-ci.yml",
               "pre-commit": ".pre-commit-config.vulnfind.yaml"}[args.provider]
@@ -509,8 +507,6 @@ def cmd_ci(args: argparse.Namespace) -> int:
     print(f"wrote {path}")
     if args.provider == "gitlab":
         print("add to .gitlab-ci.yml:  include: { local: vulnfind.gitlab-ci.yml }")
-    if "YOUR-USER" in text:
-        print("edit the `pip install` line to point at where vulnfind is hosted (or re-run with --install)")
     return 0
 
 

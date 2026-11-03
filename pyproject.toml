@@ -16,6 +16,10 @@ classifiers = [
   "Topic :: Security",
 ]
 
+[project.urls]
+Homepage = "https://github.com/codingsushi79/vulnfind"
+Issues = "https://github.com/codingsushi79/vulnfind/issues"
+
 [project.scripts]
 vulnfind = "vulnfind.cli:main"
 

@@ -1,5 +1,5 @@
 # Lets other repos use vulnfind via the pre-commit framework:
-#   - repo: https://github.com/YOUR-USER/vulnfind
+#   - repo: https://github.com/codingsushi79/vulnfind
 #     rev: v2.0.0
 #     hooks: [{id: vulnfind}]
 - id: vulnfind

@@ -10,7 +10,7 @@ from typing import Dict, List
 from .. import __version__
 from ..models import CATEGORIES, Finding, ScanResult, Severity
 
-TOOL_URI = "https://github.com/vulnfind/vulnfind"
+TOOL_URI = "https://github.com/codingsushi79/vulnfind"
 
 
 def _now() -> str:

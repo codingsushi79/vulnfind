@@ -268,7 +268,7 @@ def render(result: ScanResult, out: TextIO = sys.stdout, color: bool = None, ver
                     w(st(wrap.fill(f.description), "grey") + "\n")
                     for r in f.references[:3]:
                         w("      " + st(r, "under", "blue") + "\n")
-                elif f.category in ("file", "config") and f.description:
+                elif f.category in ("file", "config", "web") and f.description:
                     w(st(wrap.fill(f.description), "grey") + "\n")
                 if f.fix:
                     w(_fix_line(st, f.fix, width))
@@ -287,7 +287,10 @@ def render(result: ScanResult, out: TextIO = sys.stdout, color: bool = None, ver
         parts.append(st(f"{n} {sev.label.lower()}", *SEV_TEXT[sev]) if n else st(f"0 {sev.label.lower()}", "grey"))
     grade = result.grade
     w(st("Findings ", "bold") + "  ".join(parts) + "     " + st("Grade ", "bold") + st(f"{grade}", "bold", GRADE_STYLE[grade]) + st(f" ({result.score}/100)", "grey") + "\n")
-    stats = [f"{result.files_scanned} files", f"{len(result.manifests)} manifests", f"{len(result.packages)} packages"]
+    if result.scanners == ["web"]:
+        stats = [f"{result.pages_scanned} pages crawled", f"{result.requests_made} requests"]
+    else:
+        stats = [f"{result.files_scanned} files", f"{len(result.manifests)} manifests", f"{len(result.packages)} packages"]
     if result.commits_scanned:
         stats.append(f"{result.commits_scanned} commits")
     if result.suppressed:

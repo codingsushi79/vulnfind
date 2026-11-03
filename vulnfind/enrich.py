@@ -84,7 +84,7 @@ def load_epss(cves: Iterable[str], use_cache: bool = True) -> Dict[str, dict]:
 
 
 def enrich(findings: List[Finding], use_cache: bool = True, warnings: Optional[List[str]] = None) -> None:
-    deps = [f for f in findings if f.category == "dependency"]
+    deps = [f for f in findings if f.category in ("dependency", "web") and f.extra.get("aliases")]
     cves = {a for f in deps for a in f.extra.get("aliases", []) if a.startswith("CVE-")}
     if not cves:
         return

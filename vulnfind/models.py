@@ -52,6 +52,7 @@ CATEGORIES = {
     "code": "Insecure code",
     "config": "Infrastructure & CI configuration",
     "file": "Sensitive files",
+    "web": "Website",
 }
 
 
@@ -141,6 +142,8 @@ class ScanResult:
     suppressed: int = 0
     below_threshold: int = 0
     commits_scanned: int = 0
+    pages_scanned: int = 0
+    requests_made: int = 0
     warnings: List[str] = field(default_factory=list)
     scanners: List[str] = field(default_factory=list)
 

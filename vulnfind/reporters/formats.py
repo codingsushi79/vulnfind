@@ -24,7 +24,7 @@ def to_json(result: ScanResult) -> str:
         "root": result.root,
         "summary": {
             "counts": result.counts(), "total": len(result.findings), "grade": result.grade, "score": result.score,
-            "files_scanned": result.files_scanned, "manifests": result.manifests, "packages": len(result.packages),
+            "files_scanned": result.files_scanned, "pages_scanned": result.pages_scanned, "requests_made": result.requests_made, "manifests": result.manifests, "packages": len(result.packages),
             "suppressed": result.suppressed, "below_threshold": result.below_threshold, "duration_seconds": round(result.duration, 2), "scanners": result.scanners,
         },
         "warnings": result.warnings,

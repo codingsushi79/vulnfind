@@ -17,7 +17,7 @@ from .progress import Progress
 from .reporters import FORMATTERS, format_for_path
 from .reporters.terminal import SEV_TEXT, Style, render, render_multi, use_color
 
-COMMANDS = ("scan", "sbom", "rules", "explain", "init", "hook", "ci", "compare", "watch", "fix", "cache")
+COMMANDS = ("scan", "web", "sbom", "rules", "explain", "init", "hook", "ci", "compare", "watch", "fix", "cache")
 FORMATS = ["table", "json", "sarif", "markdown", "html", "sbom", "github", "junit", "csv"]
 
 EPILOG = """examples:
@@ -35,6 +35,7 @@ EPILOG = """examples:
   vulnfind hook install                 block commits that add secrets
   vulnfind ci github                    generate a GitHub Actions workflow
   vulnfind compare old.json new.json    what got introduced / fixed between two scans
+  vulnfind https://example.com          scan a website you own (see `vulnfind web --help`)
 
 configuration: .vulnfind.json in the scanned folder (`vulnfind init`), overridden by flags.
 suppress inline with:  # vulnfind:ignore [RULE-ID]   ·   project-wide: .vulnfindignore
@@ -101,6 +102,62 @@ def _add_scan_args(p: argparse.ArgumentParser) -> None:
     g.add_argument("-j", "--jobs", type=int, default=None, metavar="N", help="worker processes (default: auto)")
 
 
+WEB_EPILOG = """Only scan websites you own or have written permission to test.
+
+default (passive): TLS & certificate, HTTPS redirect, security headers (CSP, HSTS, framing…), cookie flags, CORS,
+  HTTP methods, debug/error pages, ~55 exposed-file probes (.git, .env, backups, phpinfo, actuator…),
+  mixed content, SRI, JS library CVEs, secrets & source maps in served JS, SPF/DMARC/CAA.
+  GET/OPTIONS requests only, rate-limited, same-origin crawl that skips logout/delete-style links.
+--active: also sends harmless markers to discovered GET parameters to confirm reflected XSS, SQL errors and
+  open redirects (capped by --active-budget; never submits POST forms).
+
+examples:
+  vulnfind web https://example.com
+  vulnfind https://example.com                 (same thing)
+  vulnfind web https://staging.example.com --active -o report.html
+  vulnfind web https://app.example.com -H "Authorization: Bearer $TOKEN" --max-pages 80
+  vulnfind web https://example.com --fail-on high --quiet-ok --notify https://hooks.slack.com/...
+"""
+
+
+def _add_web_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("urls", nargs="+", metavar="URL", help="site(s) to scan (https:// assumed if omitted)")
+    g = p.add_argument_group("scope")
+    g.add_argument("--max-pages", type=int, default=30, metavar="N", help="pages to crawl (default: 30; 1 = only the given URL)")
+    g.add_argument("--max-requests", type=int, default=600, metavar="N", help="hard cap on requests (default: 600)")
+    g.add_argument("--rate", type=float, default=8.0, metavar="RPS", help="requests per second (default: 8)")
+    g.add_argument("--timeout", type=float, default=15.0, metavar="SECONDS")
+    g.add_argument("-H", "--header", action="append", default=[], metavar="'Name: value'", help="extra request header (auth). Repeatable")
+    g.add_argument("--cookie", metavar="'a=1; b=2'", help="Cookie header for authenticated scans")
+    g.add_argument("--insecure", action="store_true", help="don't verify TLS certificates for requests")
+    g.add_argument("--active", action="store_true", help="enable active probes (XSS, SQL errors, open redirect) - authorised targets only")
+    g.add_argument("--active-budget", type=int, default=150, metavar="N", help="max requests for active probes (default: 150)")
+    g = p.add_argument_group("checks")
+    g.add_argument("--no-tls", action="store_true", help="skip certificate/protocol checks")
+    g.add_argument("--no-paths", action="store_true", help="skip exposed-file probes")
+    g.add_argument("--no-js", action="store_true", help="skip JavaScript analysis")
+    g.add_argument("--no-dns", action="store_true", help="skip SPF/DMARC/CAA lookups")
+    g.add_argument("--offline", action="store_true", help="no third-party lookups (OSV, KEV/EPSS, DNS-over-HTTPS)")
+    g.add_argument("--no-cache", action="store_true")
+    g.add_argument("--no-enrich", action="store_true", help="skip CISA KEV / EPSS for library CVEs")
+    g = p.add_argument_group("output & gating")
+    g.add_argument("-f", "--format", choices=FORMATS, default=None)
+    g.add_argument("-o", "--output", action="append", default=[], metavar="FILE")
+    g.add_argument("-v", "--verbose", action="store_true")
+    g.add_argument("--limit", type=int, default=0, metavar="N")
+    g.add_argument("--min-severity", default="low", metavar="LEVEL")
+    g.add_argument("--fail-on", default="high", metavar="LEVEL")
+    g.add_argument("--baseline", metavar="FILE", help="hide findings recorded in a baseline file")
+    g.add_argument("--write-baseline", metavar="FILE")
+    g.add_argument("--notify", action="append", default=[], metavar="URL")
+    g.add_argument("--notify-always", action="store_true")
+    g.add_argument("--quiet-ok", action="store_true")
+    g.add_argument("--no-progress", action="store_true")
+    g.add_argument("-q", "--quiet", action="store_true")
+    g.add_argument("--no-color", dest="color", action="store_false", default=None)
+    g.add_argument("--color", dest="color", action="store_true")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="vulnfind",
@@ -112,6 +169,10 @@ def build_parser() -> argparse.ArgumentParser:
     _add_scan_args(sub.add_parser("scan", help="scan folder(s) (default command)", epilog=EPILOG,
                                   formatter_class=argparse.RawDescriptionHelpFormatter))
 
+    wb = sub.add_parser("web", help="scan a website (TLS, headers, exposed files, JS libraries, …)", epilog=WEB_EPILOG,
+                        formatter_class=argparse.RawDescriptionHelpFormatter)
+    _add_web_args(wb)
+
     sb = sub.add_parser("sbom", help="generate a CycloneDX SBOM of all dependencies")
     sb.add_argument("path", nargs="?", default=".")
     sb.add_argument("-o", "--output", action="append", default=[], metavar="FILE")
@@ -119,7 +180,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(sb)
 
     r = sub.add_parser("rules", help="list built-in rules")
-    r.add_argument("--category", choices=["secret", "code", "config", "file", "dependency"])
+    r.add_argument("--category", choices=["secret", "code", "config", "file", "dependency", "web"])
     r.add_argument("--json", action="store_true")
     e = sub.add_parser("explain", help="explain a rule or advisory")
     e.add_argument("rule_id")
@@ -241,8 +302,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         fail_on = None if str(o["fail_on"]).lower() == "none" else _parse_sev(o["fail_on"], "--fail-on")
     except (ValueError, OSError) as e:
         return _err(str(e))
-    fmt = o["format"] or "table"
-    if len(roots) > 1 and fmt not in ("table", "json"):
+    if len(roots) > 1 and (o["format"] or "table") not in ("table", "json"):
         return _err("scanning several paths supports --format table or json")
 
     progress = Progress(enabled=not (args.no_progress or args.quiet), color=args.color is not False)
@@ -261,6 +321,12 @@ def cmd_scan(args: argparse.Namespace) -> int:
         raise
     progress.close()
 
+    return _finish(results, args, o, fail_on)
+
+
+def _finish(results: List[ScanResult], args: argparse.Namespace, o: Dict[str, Any], fail_on: Optional[Severity]) -> int:
+    """Shared tail of every scan command: render, write reports, baseline, notify, exit code."""
+    fmt = o["format"] or "table"
     failing = fail_on is not None and any(f.severity >= fail_on for r in results for f in r.findings)
     if args.quiet_ok and not failing:
         args.quiet = True
@@ -280,7 +346,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
     except (ValueError, OSError) as e:
         return _err(str(e))
 
-    if args.write_baseline:
+    if getattr(args, "write_baseline", None):
         with open(args.write_baseline, "w", encoding="utf-8") as fh:
             json.dump({"tool": "vulnfind", "version": __version__, "findings": [
                 {"fingerprint": f.fingerprint, "rule_id": f.rule_id, "file": f.file, "title": f.title}
@@ -300,6 +366,62 @@ def cmd_scan(args: argparse.Namespace) -> int:
                     host = url.split("/")[2] if "://" in url else url
                     print(f"  notify {host}: {'sent' if ok else 'FAILED'} ({info})", file=sys.stderr)
     return 1 if failing else 0
+
+
+def cmd_web(args: argparse.Namespace) -> int:
+    from .engine import load_baseline
+    from .web import WebOptions, scan_site
+    try:
+        fail_on = None if args.fail_on.lower() == "none" else _parse_sev(args.fail_on, "--fail-on")
+        min_sev = _parse_sev(args.min_severity, "--min-severity")
+    except ValueError as e:
+        return _err(str(e))
+    headers: Dict[str, str] = {}
+    for h in args.header:
+        if ":" not in h:
+            return _err(f"--header must look like 'Name: value', got {h!r}")
+        k, v = h.split(":", 1)
+        headers[k.strip()] = v.strip()
+    if args.cookie:
+        headers["Cookie"] = args.cookie
+    if len(args.urls) > 1 and (args.format or "table") not in ("table", "json"):
+        return _err("scanning several sites supports --format table or json")
+    progress = Progress(enabled=not (args.no_progress or args.quiet), color=args.color is not False)
+    if not args.quiet:
+        st = Style(use_color(sys.stderr, args.color))
+        note = "Only scan sites you own or are authorised to test."
+        if args.active:
+            note += " Active mode sends test payloads to discovered parameters."
+        print(st(f"  {note}", "grey"), file=sys.stderr)
+    results: List[ScanResult] = []
+    try:
+        for url in args.urls:
+            if len(args.urls) > 1:
+                progress.log(Style(progress.color)(f"▸ {url}", "bold"))
+            opts = WebOptions(max_pages=max(1, args.max_pages), active=args.active, active_budget=args.active_budget,
+                              rate=args.rate, timeout=args.timeout, max_requests=args.max_requests, headers=headers,
+                              verify_tls=not args.insecure, tls=not args.no_tls, paths=not args.no_paths, js=not args.no_js,
+                              dns=not args.no_dns, offline=args.offline, use_cache=not args.no_cache, enrich=not args.no_enrich,
+                              min_severity=min_sev, progress=progress)
+            results.append(scan_site(url, opts))
+    except ValueError as e:
+        progress.close()
+        return _err(str(e))
+    except KeyboardInterrupt:
+        progress.close()
+        raise
+    progress.close()
+    if args.baseline:
+        try:
+            known = load_baseline(args.baseline)
+        except (OSError, ValueError, KeyError) as e:
+            return _err(f"--baseline: {e}")
+        for r in results:
+            before = len(r.findings)
+            r.findings = [f for f in r.findings if f.fingerprint not in known]
+            r.suppressed += before - len(r.findings)
+    o = {"format": args.format, "limit": args.limit, "output": args.output, "notify": args.notify, "notify_always": args.notify_always}
+    return _finish(results, args, o, fail_on)
 
 
 def cmd_sbom(args: argparse.Namespace) -> int:
@@ -365,6 +487,10 @@ def _all_rules():
     ]
     for rid, cat, sev, title, desc in structural:
         rows.append({"id": rid, "category": cat, "severity": sev, "title": title, "description": desc, "fix": "", "cwe": None, "applies_to": []})
+    from .web import rule_catalog
+    for rid, sev, title, desc in rule_catalog():
+        rows.append({"id": rid, "category": "web", "severity": sev, "title": title, "description": desc, "fix": "",
+                     "cwe": None, "applies_to": ["vulnfind web <url>"]})
     seen = set()
     for glob, rid, title, sev, desc in SENSITIVE:
         if rid not in seen:
@@ -675,10 +801,12 @@ def cmd_cache(args: argparse.Namespace) -> int:
 
 def main(argv: Optional[List[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    if not argv or (argv[0] not in COMMANDS and argv[0] not in ("-h", "--help", "--version")):
+    if argv and argv[0] not in COMMANDS and argv[0].lower().startswith(("http://", "https://")):
+        argv.insert(0, "web")  # `vulnfind https://example.com` scans a website
+    elif not argv or (argv[0] not in COMMANDS and argv[0] not in ("-h", "--help", "--version")):
         argv.insert(0, "scan")
     args = build_parser().parse_args(argv)
-    handlers = {"scan": cmd_scan, "sbom": cmd_sbom, "rules": cmd_rules, "explain": cmd_explain, "init": cmd_init,
+    handlers = {"scan": cmd_scan, "web": cmd_web, "sbom": cmd_sbom, "rules": cmd_rules, "explain": cmd_explain, "init": cmd_init,
                 "hook": cmd_hook, "ci": cmd_ci, "compare": cmd_compare, "watch": cmd_watch, "fix": cmd_fix, "cache": cmd_cache}
     try:
         return handlers[args.command](args)

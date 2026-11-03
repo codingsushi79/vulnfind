@@ -2,10 +2,11 @@
 
 [github.com/codingsushi79/vulnfind](https://github.com/codingsushi79/vulnfind)
 
-A zero-dependency security scanner for any project folder: one command, five scanners, with ranked results that tell you what to fix first.
+A zero-dependency security scanner for project folders **and websites**, with ranked results that tell you what to fix first.
 
 ```bash
-vulnfind ~/code/my-app
+vulnfind ~/code/my-app            # scan code
+vulnfind https://my-site.com      # scan a website you own
 ```
 
 ## What it finds
@@ -17,6 +18,8 @@ vulnfind ~/code/my-app
 | **code** | **Data-flow (taint) analysis.** For Python it uses the AST: request data, route parameters and CLI input are traced through variables, f-strings and helper functions (arguments *and* return values) into SQL, shell, `eval`, `pickle`/`yaml`, template, filesystem, HTTP and redirect sinks. For JS/TS it's scope-aware variable tracking from `req.query`/`req.body`/`location.search`… into `exec`, SQL, `fs`, `fetch`, `innerHTML`, `res.send`, `RegExp`, Mongo queries, `_.merge`. Sanitisers (`int()`, `shlex.quote`, `parseInt`, `DOMPurify`…) are understood. On top of that, ~100 pattern rules for Python, JS/TS, Go, Java/Kotlin, C#, PHP, Ruby, C/C++, shell and templates (CSRF off, insecure cookies, Electron, `NEXT_PUBLIC_*SECRET`, zip-slip, JWT without verification…). |
 | **config** | Dockerfile (root user, unpinned base, secrets in `ENV`, `COPY .` without `.dockerignore`), compose & Kubernetes (privileged, host namespaces, docker.sock, dangerous capabilities, unpinned images), Terraform (SSH/RDP/DB ports open to the world, public buckets/DBs, IMDSv1, wildcard IAM), GitHub Actions (pwn requests, script injection, unpinned actions, self-hosted runners on PRs), pip dependency confusion, HTTP registries, weak TLS, and **end-of-life runtimes**. |
 | **files** | Key stores, SSH keys, `.env`, Terraform state, git credentials, DB/heap dumps, world-writable files. Each one is marked as tracked, git-ignored, or *about to be committed*. |
+
+| **web** | `vulnfind <url>` scans a live site: TLS certificate & protocol versions, HTTPS redirect, security headers (CSP quality, HSTS, clickjacking, nosniff…), cookie flags, CORS misconfiguration, risky HTTP methods, debug/error pages (Werkzeug, Django, Laravel, Rails…), ~50 **exposed-file probes** (`.git`, `.env`, backups, DB dumps, `phpinfo`, Spring actuator, source maps…), mixed content, missing SRI, password forms over HTTP, **vulnerable JavaScript libraries** served to visitors (OSV + KEV/EPSS), **secrets in served JS**, and SPF/DMARC/CAA. With `--active`, it also confirms reflected XSS, SQL errors and open redirects. See [Website scanning](#website-scanning). |
 
 Every finding gets a **priority score (0–100)** combining severity, exploitation evidence (KEV/EPSS), reachability, confidence and context, and the report opens with **"Fix these first"**.
 
@@ -45,6 +48,30 @@ vulnfind sbom -o sbom.cdx.json        # CycloneDX SBOM incl. vulnerabilities
 ```
 
 Try it on the bundled, deliberately vulnerable demo: `vulnfind demo/vulnerable-app`.
+
+## Website scanning
+
+**Only scan sites you own or have written permission to test.**
+
+```bash
+vulnfind https://example.com                        # passive scan (same as `vulnfind web …`)
+vulnfind web https://staging.example.com --active   # + confirm XSS / SQL errors / open redirects
+vulnfind web https://app.example.com -H "Authorization: Bearer $TOKEN" --cookie "session=…" --max-pages 100
+vulnfind web https://example.com https://shop.example.com   # several sites, one table
+vulnfind web https://example.com -o site.html --fail-on high --notify https://hooks.slack.com/...
+```
+
+What it's careful about:
+
+- **Passive by default.** It only sends GET/OPTIONS requests, crawls same-origin pages only, and never follows logout/delete/unsubscribe-style links.
+- **Rate-limited and capped.** `--rate` (8 req/s), `--max-requests` (600), `--timeout`.
+- **No soft-404 false positives.** An exposed-file hit must match a content signature (a real `.git/HEAD`, a real `KEY=value` env file…) and differ from a random-path baseline. Binary files are checked with a 4 KB `Range` request.
+- **Narrow `--active` mode.** It sends harmless markers to GET parameters the crawl already found, never submits POST forms, and stops at `--active-budget` (150) requests.
+- **Untrusted certificates** are reported, and the scan continues so the rest of the site is still checked (`--insecure` skips verification entirely).
+
+All the usual machinery applies: priority ranking, every output format, `--fail-on`, `--baseline`, `--notify`, `--quiet-ok`. That makes a nightly cron job like `vulnfind https://example.com --quiet-ok --notify $SLACK_URL` a cheap external monitor.
+
+Try it locally: `python3 tests/web_fixture.py 8090` starts a deliberately vulnerable site, then run `vulnfind http://127.0.0.1:8090 --active`.
 
 ## Automation
 
@@ -94,16 +121,20 @@ File scanning runs across CPU cores (`-j N`), secret regexes only run on files c
 
 ## Privacy & network
 
-Only dependency checks touch the network: package **names and versions** go to `api.osv.dev` and CVE IDs to `api.first.org` (EPSS), and the public CISA KEV feed is downloaded. Source code never leaves your machine. `--offline` disables all of it (`--no-enrich` disables only KEV/EPSS). `--notify` sends findings to the URL you give it.
+Folder scans: only dependency checks touch the network. Package **names and versions** go to `api.osv.dev` and CVE IDs to `api.first.org` (EPSS), and the public CISA KEV feed is downloaded. Source code never leaves your machine.
+
+Website scans: requests go to the target site. Detected JS library names and versions go to OSV, and the domain's TXT/CAA records are looked up via DNS-over-HTTPS at `cloudflare-dns.com` (override with `VULNFIND_DOH_URL`, or skip with `--no-dns`).
+
+`--offline` disables all third-party lookups (`--no-enrich` disables only KEV/EPSS). `--notify` sends findings to the URL you give it.
 
 ## Limitations
 
-Taint analysis works within a single file, and the JS engine works line by line rather than from a full parse, so cross-module flows and unusual code shapes can be missed. Pattern rules can't prove exploitability. Treat code findings as "look here", and the data-flow ones as "look here first". Dependency precision depends on your lockfile. CVSS v4-only advisories get an approximate score.
+Website scanning is a fast baseline, not a full penetration test: it doesn't log in by itself (pass `-H`/`--cookie`), execute JavaScript (single-page apps that render links client-side crawl shallowly), fuzz POST forms, or find business-logic flaws. Taint analysis works within a single file, and the JS engine works line by line rather than from a full parse, so cross-module flows and unusual code shapes can be missed. Pattern rules can't prove exploitability. Treat code findings as "look here", and the data-flow ones as "look here first". Dependency precision depends on your lockfile. CVSS v4-only advisories get an approximate score.
 
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests     # 74 tests, no dependencies
+python3 -m unittest discover -s tests     # 90 tests, no dependencies (web tests use a local fixture site)
 ```
 
 Rules are data: add a `Rule(...)` in `vulnfind/scanners/{secrets,code,iac}.py`, a taint sink in `taint_python.py` / `taint_js.py`, or a file pattern in `files.py`.

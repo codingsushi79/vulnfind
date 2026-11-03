@@ -1,0 +1,16 @@
+name: CI
+on:
+  pull_request_target:
+    types: [opened, synchronize]
+permissions: write-all
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: tj-actions/changed-files@v35
+      - name: Greet
+        run: echo "Thanks for ${{ github.event.pull_request.title }}"
+      - run: npm ci && npm test

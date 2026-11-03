@@ -1,0 +1,3 @@
+# vulnfind's own repo: the demo app and tests contain deliberate vulnerabilities and fake secrets.
+demo/
+tests/

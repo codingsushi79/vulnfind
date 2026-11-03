@@ -1,0 +1,11 @@
+{
+  "name": "vulnerable-app",
+  "version": "1.0.0",
+  "engines": { "node": ">=16" },
+  "dependencies": {
+    "express": "4.17.1",
+    "lodash": "4.17.20",
+    "jsonwebtoken": "8.5.1",
+    "minimist": "1.2.5"
+  }
+}

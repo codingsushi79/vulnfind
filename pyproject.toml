@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vulnfind"
+version = "1.0.0"
+description = "Zero-dependency security scanner: CVEs in dependencies, leaked secrets, insecure code, IaC/CI misconfigurations and sensitive files."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+keywords = ["security", "cve", "sast", "secrets", "sbom", "osv", "scanner"]
+classifiers = [
+  "Environment :: Console",
+  "Programming Language :: Python :: 3",
+  "Topic :: Security",
+]
+
+[project.scripts]
+vulnfind = "vulnfind.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["vulnfind*"]

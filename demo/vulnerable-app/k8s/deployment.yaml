@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+spec:
+  template:
+    spec:
+      hostNetwork: true
+      containers:
+        - name: web
+          image: vulnerable-app:latest
+          securityContext:
+            privileged: true
+            allowPrivilegeEscalation: true
+            runAsUser: 0
+            capabilities:
+              add: ["NET_ADMIN"]
+              drop:
+                - ALL

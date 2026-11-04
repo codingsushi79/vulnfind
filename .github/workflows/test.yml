@@ -24,11 +24,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python }}
+      # uv's standalone builds still cover 3.8/3.9, which setup-python no longer ships for current Ubuntu images
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6.8.0
+      - name: Install Python ${{ matrix.python }}
+        run: uv python install ${{ matrix.python }}
       - name: Unit tests (no third-party dependencies)
-        run: python -m unittest discover -s tests -v
+        run: uv run --no-project --python ${{ matrix.python }} python -m unittest discover -s tests -v
         env:
           GIT_AUTHOR_NAME: ci
           GIT_AUTHOR_EMAIL: ci@example.com

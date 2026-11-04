@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import re
+import os
 import shutil
+import stat
 import subprocess
+import sys
 import tempfile
 from typing import Optional, Tuple
 
@@ -29,6 +32,21 @@ def normalise(arg: str) -> Tuple[str, Optional[str]]:
     return arg, None
 
 
+def _rmtree(path: str) -> None:
+    """shutil.rmtree that also removes read-only files (git marks objects read-only on Windows)."""
+    def retry(func, target, _exc):
+        try:
+            for path in (os.path.dirname(target), target):
+                os.chmod(path, os.stat(path).st_mode | stat.S_IWRITE | stat.S_IREAD | (stat.S_IEXEC if os.path.isdir(path) else 0))
+            func(target)
+        except OSError:
+            pass
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=retry)
+    else:
+        shutil.rmtree(path, onerror=retry)
+
+
 class Clone:
     """Context manager: shallow-clones a repo and removes it afterwards."""
 
@@ -48,14 +66,13 @@ class Clone:
         cmd += [self.url, self.path]
         # GIT_TERMINAL_PROMPT=0: fail instead of hanging on a credential prompt for private repos.
         env = {"GIT_TERMINAL_PROMPT": "0", "GIT_LFS_SKIP_SMUDGE": "1"}
-        import os
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout, env={**os.environ, **env})
         if proc.returncode != 0:
-            shutil.rmtree(self.path, ignore_errors=True)
+            _rmtree(self.path)
             msg = proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() else "git clone failed"
             raise ValueError(f"could not clone {self.url}: {msg}")
         return self.path
 
     def __exit__(self, *exc) -> None:
         if self.path:
-            shutil.rmtree(self.path, ignore_errors=True)
+            _rmtree(self.path)

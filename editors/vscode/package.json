@@ -9,6 +9,7 @@
   "engines": { "vscode": "^1.80.0" },
   "categories": ["Linters"],
   "main": "./extension.js",
+  "files": ["extension.js", "README.md", "LICENSE"],
   "activationEvents": ["onStartupFinished"],
   "contributes": {
     "commands": [

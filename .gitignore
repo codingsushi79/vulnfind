@@ -6,3 +6,4 @@ dist/
 .venv/
 *.sarif
 report.html
+*.vsix

@@ -19,7 +19,7 @@ vulnfind https://my-site.com      # scan a website you own
 | **config** | Dockerfile (root user, unpinned base, secrets in `ENV`, `COPY .` without `.dockerignore`), compose & Kubernetes (privileged, host namespaces, docker.sock, dangerous capabilities, unpinned images), Terraform (SSH/RDP/DB ports open to the world, public buckets/DBs, IMDSv1, wildcard IAM), GitHub Actions (pwn requests, script injection, unpinned actions, self-hosted runners on PRs), pip dependency confusion, HTTP registries, weak TLS, and **end-of-life runtimes**. |
 | **files** | Key stores, SSH keys, `.env`, Terraform state, git credentials, DB/heap dumps, world-writable files. Each one is marked as tracked, git-ignored, or *about to be committed*. |
 
-| **web** | `vulnfind <url>` scans a live site: TLS certificate & protocol versions, HTTPS redirect, security headers (CSP quality, HSTS, clickjacking, nosniff…), cookie flags, CORS misconfiguration, risky HTTP methods, debug/error pages (Werkzeug, Django, Laravel, Rails…), ~50 **exposed-file probes** (`.git`, `.env`, backups, DB dumps, `phpinfo`, Spring actuator, source maps…), mixed content, missing SRI, password forms over HTTP, **vulnerable JavaScript libraries** served to visitors (OSV + KEV/EPSS), **secrets in served JS**, and SPF/DMARC/CAA. With `--active`, it also confirms reflected XSS, SQL errors and open redirects. See [Website scanning](#website-scanning). |
+| **web** | `vulnfind <url>` scans a live site: TLS certificate & protocol versions, HTTPS redirect, security headers (CSP quality, HSTS, clickjacking, nosniff…), cookie flags, CORS misconfiguration, risky HTTP methods, debug/error pages (Werkzeug, Django, Laravel, Rails…), ~50 **exposed-file probes** (`.git`, `.env`, backups, DB dumps, `phpinfo`, Spring actuator, source maps…), mixed content, missing SRI, password forms over HTTP, **server software CVEs** (Apache, nginx, IIS, PHP, OpenSSL, Tomcat, WordPress, Drupal… versions from banners matched against NVD, e.g. Apache 2.4.49 → CVE-2021-41773), **vulnerable JavaScript libraries** served to visitors (OSV + KEV/EPSS), **secrets in served JS**, and SPF/DMARC/CAA. With `--active`, it also confirms reflected XSS, SQL errors and open redirects. See [Website scanning](#website-scanning). |
 
 Every finding gets a **priority score (0–100)** combining severity, exploitation evidence (KEV/EPSS), reachability, confidence and context, and the report opens with **"Fix these first"**.
 
@@ -123,18 +123,18 @@ File scanning runs across CPU cores (`-j N`), secret regexes only run on files c
 
 Folder scans: only dependency checks touch the network. Package **names and versions** go to `api.osv.dev` and CVE IDs to `api.first.org` (EPSS), and the public CISA KEV feed is downloaded. Source code never leaves your machine.
 
-Website scans: requests go to the target site. Detected JS library names and versions go to OSV, and the domain's TXT/CAA records are looked up via DNS-over-HTTPS at `cloudflare-dns.com` (override with `VULNFIND_DOH_URL`, or skip with `--no-dns`).
+Website scans: requests go to the target site. Detected JS library names and versions go to OSV, server product/version CPEs go to NIST NVD (set `NVD_API_KEY` for faster lookups; results cached 24h), and the domain's TXT/CAA records are looked up via DNS-over-HTTPS at `cloudflare-dns.com` (override with `VULNFIND_DOH_URL`, or skip with `--no-dns`).
 
 `--offline` disables all third-party lookups (`--no-enrich` disables only KEV/EPSS). `--notify` sends findings to the URL you give it.
 
 ## Limitations
 
-Website scanning is a fast baseline, not a full penetration test: it doesn't log in by itself (pass `-H`/`--cookie`), execute JavaScript (single-page apps that render links client-side crawl shallowly), fuzz POST forms, or find business-logic flaws. Taint analysis works within a single file, and the JS engine works line by line rather than from a full parse, so cross-module flows and unusual code shapes can be missed. Pattern rules can't prove exploitability. Treat code findings as "look here", and the data-flow ones as "look here first". Dependency precision depends on your lockfile. CVSS v4-only advisories get an approximate score.
+Website scanning is a fast baseline, not a full penetration test. Server CVEs are matched by advertised version, so a hidden banner (`Server: nginx`) can't be checked, and distro builds may have backported fixes (flagged as medium confidence). It also doesn't log in by itself (pass `-H`/`--cookie`), execute JavaScript (single-page apps that render links client-side crawl shallowly), fuzz POST forms, or find business-logic flaws. Taint analysis works within a single file, and the JS engine works line by line rather than from a full parse, so cross-module flows and unusual code shapes can be missed. Pattern rules can't prove exploitability. Treat code findings as "look here", and the data-flow ones as "look here first". Dependency precision depends on your lockfile. CVSS v4-only advisories get an approximate score.
 
 ## Development
 
 ```bash
-python3 -m unittest discover -s tests     # 90 tests, no dependencies (web tests use a local fixture site)
+python3 -m unittest discover -s tests     # 94 tests, no dependencies (web tests use a local fixture site)
 ```
 
 Rules are data: add a `Rule(...)` in `vulnfind/scanners/{secrets,code,iac}.py`, a taint sink in `taint_python.py` / `taint_js.py`, or a file pattern in `files.py`.

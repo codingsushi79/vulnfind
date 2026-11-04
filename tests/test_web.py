@@ -8,7 +8,7 @@ from email.message import Message
 
 from vulnfind import cli
 from vulnfind.models import Severity
-from vulnfind.web import WebOptions, checks, dns, libs, scan_site
+from vulnfind.web import WebOptions, checks, dns, libs, scan_site, software
 from vulnfind.web.client import Response
 
 import web_fixture
@@ -147,6 +147,74 @@ class CheckUnitTest(unittest.TestCase):
         finally:
             dns.txt = orig
         self.assertEqual(ids, {"WEB-DNS-SPF-PERMISSIVE", "WEB-DNS-NO-DMARC", "WEB-DNS-NO-CAA"})
+
+
+def _cve(cve_id, score, kev=None):
+    c = {"id": cve_id, "vulnStatus": "Analyzed", "descriptions": [{"lang": "en", "value": f"desc of {cve_id}"}],
+         "metrics": {"cvssMetricV31": [{"cvssData": {"baseScore": score, "vectorString": "CVSS:3.1/AV:N"}}]}}
+    if kev:
+        c["cisaExploitAdd"] = kev
+    return c
+
+
+class ServerSoftwareTest(unittest.TestCase):
+    def setUp(self):
+        self.calls = []
+        db = {"cpe:2.3:a:apache:http_server:2.4.49:*:*:*:*:*:*:*": [_cve("CVE-2021-41773", 9.8, "2021-11-03"), _cve("CVE-2021-42013", 9.8, "2021-11-03"),
+                                                                    _cve("CVE-2021-40438", 9.0)],
+              "cpe:2.3:a:f5:nginx:1.18.0:*:*:*:*:*:*:*": [],
+              "cpe:2.3:a:nginx:nginx:1.18.0:*:*:*:*:*:*:*": [_cve("CVE-2021-23017", 7.7)]}
+
+        def fake(client, cpe):
+            self.calls.append(cpe)
+            return db.get(cpe, [])
+        self.orig = software.NVDClient.cves_for
+        software.NVDClient.cves_for = fake
+
+    def tearDown(self):
+        software.NVDClient.cves_for = self.orig
+
+    def test_apache_traversal_cves_detected(self):
+        m = Message()
+        m["Server"] = "Apache/2.4.49 (Unix)"
+        found = software.software_findings(software.fingerprint(m), "https://site.test", True, [])
+        self.assertEqual(len(found), 1)
+        f = found[0]
+        self.assertEqual(f.rule_id, "WEB-OUTDATED-SOFTWARE")
+        self.assertEqual(f.severity, Severity.CRITICAL)
+        self.assertEqual(f.extra["aliases"][:2], ["CVE-2021-41773", "CVE-2021-42013"])  # exploited ones first
+        self.assertEqual(f.extra["kev"]["cve"], "CVE-2021-41773")
+        self.assertIn("CVE-2021-41773", f.title)
+        self.assertEqual(f.extra["confidence"], "high")
+
+    def test_vendor_fallback_and_distro_confidence(self):
+        m = Message()
+        m["Server"] = "nginx/1.18.0 (Ubuntu)"
+        f = software.software_findings(software.fingerprint(m), "https://site.test", True, [])[0]
+        self.assertEqual(self.calls, ["cpe:2.3:a:f5:nginx:1.18.0:*:*:*:*:*:*:*", "cpe:2.3:a:nginx:nginx:1.18.0:*:*:*:*:*:*:*"])
+        self.assertEqual((f.severity, f.extra["confidence"]), (Severity.HIGH, "medium"))
+        self.assertIn("backported", f.description)
+
+    def test_banners_parsed(self):
+        m = Message()
+        m["Server"] = "Apache/2.4.49 (Unix) OpenSSL/1.0.2k-fips mod_ssl/2.4.49"
+        m["X-Powered-By"] = "PHP/7.4.3"
+        got = {(s.key, s.version) for s in software.fingerprint(m, "WordPress 5.8.1")}
+        self.assertEqual(got, {("apache", "2.4.49"), ("openssl", "1.0.2k"), ("mod_ssl", "2.4.49"), ("php", "7.4.3"), ("wordpress", "5.8.1")})
+        bare = Message()
+        bare["Server"] = "cloudflare"
+        self.assertEqual(software.fingerprint(bare), [])
+
+    def test_fixture_site_reports_server_software(self):
+        srv, url = web_fixture.serve()
+        try:
+            r = scan_site(url, opts(max_pages=2, paths=False, offline=False, enrich=False, js=False))
+        finally:
+            srv.shutdown()
+        # Server: Apache/2.4.29, X-Powered-By: PHP/7.2.1, generator WordPress 4.9.8 are all looked up
+        for cpe in ("cpe:2.3:a:apache:http_server:2.4.29:", "cpe:2.3:a:php:php:7.2.1:", "cpe:2.3:a:wordpress:wordpress:4.9.8:"):
+            self.assertTrue(any(c.startswith(cpe) for c in self.calls), cpe)
+        self.assertFalse([f for f in r.findings if f.rule_id == "WEB-OUTDATED-SOFTWARE"])  # not in the fake DB
 
 
 class WebCliTest(unittest.TestCase):

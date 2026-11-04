@@ -37,6 +37,9 @@ def rule_catalog():
         ("WEB-DEBUG-EXPOSED", "HIGH", "Framework debug mode exposed", "Werkzeug, Django, Laravel, Rails, Symfony debug pages."),
         ("WEB-ERROR-DISCLOSURE", "MEDIUM", "Stack traces in responses", "Python/PHP/Java/.NET error details."),
         ("WEB-DIRECTORY-LISTING", "MEDIUM", "Directory listing", "Index of / pages."),
+        ("WEB-OUTDATED-SOFTWARE", "HIGH", "Server software with known CVEs",
+         "Version from Server/X-Powered-By/generator banners (Apache, nginx, IIS, PHP, OpenSSL, Tomcat, WordPress, Drupal…) "
+         "matched against NVD, with CISA KEV/EPSS."),
         ("WEB-VULNERABLE-JS-LIBRARY", "HIGH", "Vulnerable JavaScript library", "Served library version has known CVEs (OSV + KEV/EPSS)."),
         ("WEB-SOURCEMAP-EXPOSED", "MEDIUM", "Public source maps", "Original front-end source is downloadable."),
         ("WEB-NO-SECURITY-TXT", "INFO", "No security.txt", "No vulnerability disclosure contact (RFC 9116)."),

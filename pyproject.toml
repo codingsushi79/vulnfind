@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vulnfind"
-version = "2.1.0"
+version = "2.2.0"
 description = "Zero-dependency security scanner for code and websites: CVEs with exploit intel, secrets, data-flow analysis, IaC/CI checks and web (DAST) scanning."
 readme = "README.md"
 requires-python = ">=3.8"

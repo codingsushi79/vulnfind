@@ -11,7 +11,7 @@ from typing import Dict, List, Optional, Tuple
 from .. import enrich
 from ..models import Finding, ScanResult, Severity
 from ..progress import NULL, Progress
-from . import active, checks, crawl, dns, libs, paths, tls
+from . import active, checks, crawl, dns, libs, paths, software, tls
 from .client import BudgetExceeded, Client, normalize, same_origin
 
 
@@ -149,6 +149,21 @@ def scan_site(url: str, opts: WebOptions) -> ScanResult:
                     enrich.enrich(lib_findings, opts.use_cache, result.warnings)
                 n_vuln = sum(1 for f in lib_findings if f.rule_id == "WEB-VULNERABLE-JS-LIBRARY")
                 p.done(f"{n_vuln} vulnerable librar{'y' if n_vuln == 1 else 'ies'}")
+
+        stack: Dict[Tuple[str, str], software.Software] = {}
+        generator = next((pg.meta.get("generator") for pg in pages if pg.meta.get("generator")), None)
+        for resp in [first, not_found] + list(fetched.values()):
+            for sw in software.fingerprint(resp.headers, generator):
+                stack.setdefault((sw.key, sw.version), sw)
+        if stack:
+            names = ", ".join(f"{software.PRODUCTS[k][0]} {v}" for k, v in stack)
+            p.stage(f"Looking up CVEs for {names} (NVD)" if not opts.offline else "Listing server software")
+            sw_findings = software.software_findings(stack.values(), base, opts.use_cache, result.warnings, opts.offline)
+            if opts.enrich and not opts.offline and sw_findings:
+                enrich.enrich(sw_findings, opts.use_cache, result.warnings)
+            raw += sw_findings
+            n_cves = sum(len(f.extra.get("aliases", [])) for f in sw_findings)
+            p.done(f"Server software: {names} · {n_cves} known CVE(s)")
 
         if opts.dns and not opts.offline:
             p.stage("Checking email spoofing protection (SPF, DMARC, CAA)")

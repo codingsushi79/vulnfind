@@ -305,7 +305,7 @@ CODE_RULES: List[Rule] = [
       r"\b(?:include|include_once|require|require_once)\b[ \t]*\(?[ \t]*[^;\n]*\$_(?:GET|POST|REQUEST|COOKIE)",
       "Including a path from the request allows local/remote file inclusion and code execution.", "Map input to an allow-list of files.",
       "CWE-98", PHP),
-    R("PHP-XSS", "XSS: request data echoed", S.HIGH, r"\b(?:echo|print)\b[^;\n]*\$_(?:GET|POST|REQUEST|COOKIE|SERVER)\b(?![^;\n]*htmlspecialchars)",
+    R("PHP-XSS", "XSS: request data echoed", S.HIGH, r"\b(?:echo|print)\b(?![^;\n]*(?:htmlspecialchars|htmlentities|esc_html|esc_attr|strip_tags)\s*\()[^;\n]*\$_(?:GET|POST|REQUEST|COOKIE|SERVER)\b",
       "Echoing request data without escaping causes reflected XSS.", "Wrap output in htmlspecialchars($v, ENT_QUOTES).", "CWE-79", PHP),
     R("PHP-UNSERIALIZE", "unserialize() on user input", S.HIGH, r"\bunserialize\([^\n]*\$_(?:GET|POST|REQUEST|COOKIE)",
       "unserialize on attacker data enables PHP object injection.", "Use json_decode().", "CWE-502", PHP),
@@ -365,17 +365,31 @@ _SQL_RULES = {"PY-SQL-INJECTION", "JS-SQL-INJECTION", "GO-SQL-INJECTION", "JAVA-
 _PLACEHOLDER = re.compile(r"\$\d|%s|=\s*\?|\(\s*\?|:\w+\b|@\w+")
 
 
-def _taint(f: SourceFile):
+def _taint(f: SourceFile, py_project=None):
     """(taint findings, regex rule IDs they supersede per line)."""
-    from . import taint_js, taint_python
+    from . import taint_js, taint_lines, taint_python
+    if f.ext in taint_lines.BY_EXT:
+        lang = taint_lines.BY_EXT[f.ext]
+        clean: set = set()
+        found = list(taint_lines.findings(lang, f.text(), f.rel, clean))
+        superseded = {}
+        for t in found:
+            superseded.setdefault(t.line, set()).update(lang.supersedes.get(t.extra.get("sink_key", ""), set()))
+        for line, key in clean:  # proven-clean sink: the coarse pattern rule on that line is a false positive
+            superseded.setdefault(line, set()).update(lang.supersedes.get(key, set()))
+        return found, superseded
     if f.ext in PY:
         mod = taint_python
     elif f.ext in JS:
         mod = taint_js
     else:
         return [], {}
-    found = list(mod.findings(f.text(), f.rel))
+    clean: set = set()
+    found = list(mod.findings(f.text(), f.rel, py_project, clean) if mod is taint_python else mod.findings(f.text(), f.rel, clean))
     superseded = {}
+    for line, key in clean:
+        rules = taint_python.CLEAN_SUPERSEDES.get(key, set()) if mod is taint_python else mod.SUPERSEDES.get(key, set())
+        superseded.setdefault(line, set()).update(rules)
     by_rule = {c.rule_id: k for k, c in getattr(mod, "CLASSES", {}).items()}
     by_rule.update({s.rule_id: s.key for s in getattr(mod, "SINKS", [])})
     for t in found:
@@ -383,8 +397,8 @@ def _taint(f: SourceFile):
     return found, superseded
 
 
-def scan(f: SourceFile, deep: bool = True) -> Iterator[Finding]:
-    taint_found, superseded = _taint(f) if deep else ([], {})
+def scan(f: SourceFile, deep: bool = True, py_project=None) -> Iterator[Finding]:
+    taint_found, superseded = _taint(f, py_project) if deep else ([], {})
     yield from taint_found
     for finding in run_rules(CODE_RULES, f, "code"):
         if finding.rule_id == "JS-EXPRESS-NO-HELMET" and "helmet" in f.text():

@@ -296,6 +296,15 @@ def _remote_admin_ports(found: List[Finding], text: str) -> None:
 
 def scan(f: SourceFile) -> Iterator[Finding]:
     text = f.text()
+    if f.ext == ".json":
+        from ..cloud import is_tfplan, tfplan_findings
+        if is_tfplan(text):
+            import json as _json
+            try:
+                yield from tfplan_findings(_json.loads(text), f.rel)
+            except ValueError:
+                pass
+            return
     yield from _capability_checks(f, text)
     rule_hits = list(run_rules(CONFIG_RULES, f, "config", text))
     if f.ext in TF:

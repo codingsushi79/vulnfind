@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vulnfind"
-version = "2.2.0"
-description = "Zero-dependency security scanner for code and websites: CVEs with exploit intel, secrets, data-flow analysis, IaC/CI checks and web (DAST) scanning."
+version = "3.0.0"
+description = "Zero-dependency security scanner for code, websites, container images and cloud: CVEs with exploit intel and reachability, cross-file data-flow analysis, secrets, IaC and DAST."
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "MIT" }
@@ -16,6 +16,9 @@ classifiers = [
   "Topic :: Security",
 ]
 
+[project.optional-dependencies]
+ai = ["anthropic"]  # only for `vulnfind ai`; everything else is dependency-free
+
 [project.urls]
 Homepage = "https://github.com/codingsushi79/vulnfind"
 Issues = "https://github.com/codingsushi79/vulnfind/issues"
@@ -25,3 +28,6 @@ vulnfind = "vulnfind.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["vulnfind*"]
+
+[tool.setuptools.package-data]
+"vulnfind.bench" = ["cases/*", "cases/.*"]

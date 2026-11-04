@@ -12,7 +12,7 @@ from typing import Dict, List, TextIO
 from .. import __version__
 from ..models import CATEGORIES, Finding, ScanResult, Severity
 from ..osv import pick_target
-from ..scanners.deps import UPGRADE_CMD
+from ..scanners.deps import upgrade_cmd
 
 
 class Style:
@@ -101,6 +101,19 @@ def _dep_context(st: Style, first: Finding) -> str:
     return st(" · ".join(bits), "grey") if bits else ""
 
 
+def _reach_line(st: Style, findings: List[Finding]) -> str:
+    called = sorted({s for f in findings for s in f.extra.get("called_symbols") or []})
+    known = [f for f in findings if f.extra.get("symbol_reachable") is not None]
+    if not known:
+        return ""
+    if called:
+        return st("your code calls vulnerable functions: ", "bold", "bred") + st(", ".join(called[:4]), "bred")
+    syms = sorted({s for f in known for s in f.extra.get("vulnerable_symbols", [])})
+    exact = all(f.extra.get("symbol_source") == "osv" for f in known)
+    note = "" if exact else " (names from advisory text - heuristic)"
+    return st("vulnerable functions not referenced: " + ", ".join(syms[:4]) + (" …" if len(syms) > 4 else "") + note, "green")
+
+
 def _intel(st: Style, kev, epss: float) -> str:
     parts = []
     if kev:
@@ -165,8 +178,12 @@ def _fix_line(st: Style, text: str, width: int) -> str:
 
 
 def render(result: ScanResult, out: TextIO = sys.stdout, color: bool = None, verbose: bool = False,
-           limit: int = 0) -> None:
+           limit: int = 0, plain: bool = False) -> None:
     st = Style(use_color(out, color))
+    if plain:
+        from ..plain import explain
+        for f in result.findings:
+            f.extra["plain"] = explain(f)
     width = min(shutil.get_terminal_size((100, 24)).columns, 120)
     rule = st("─" * (width - 4), "grey")
     w = out.write
@@ -216,13 +233,19 @@ def render(result: ScanResult, out: TextIO = sys.stdout, color: bool = None, ver
                         w(_fix_line(st, first.fix, width))
                     w("      " + st(first.rule_id, "grey") + "\n")
                     continue
-                arrow = st(f"  →  {g['fix']}", "green", "bold") if g["fix"] else st("  (no fix yet)", "grey")
+                arrow = st(f"  →  {g['fix']}", "green", "bold") if g["fix"] else \
+                    ("" if first.extra.get("ecosystem") == "binary" else st("  (no fix yet)", "grey"))
                 loc = st(first.location, "grey")
                 w(f"\n  {_badge(st, g['severity'])} {st(first.extra['package'], 'bold')} {first.extra['version']}{arrow}   {loc}\n")
                 ctx = _dep_context(st, first)
                 intel = _intel(st, g["kev"], g["epss"])
                 if ctx or intel:
                     w("      " + "   ".join(x for x in (intel, ctx) if x) + "\n")
+                reach_line = _reach_line(st, g["findings"])
+                if reach_line:
+                    w("      " + reach_line + "\n")
+                if plain:
+                    w(wrap.fill(first.extra["plain"]) + "\n")
                 for v in g["findings"][: (None if verbose else 4)]:
                     ids = v.extra.get("aliases") or [v.rule_id]
                     other = f" ({ids[1]})" if len(ids) > 1 else ""
@@ -238,7 +261,7 @@ def render(result: ScanResult, out: TextIO = sys.stdout, color: bool = None, ver
                 if hidden > 0:
                     w(st(f"      … {hidden} more (use -v)\n", "grey"))
                 if g["fix"]:
-                    cmd = UPGRADE_CMD.get(first.extra["ecosystem"], "upgrade to {fix}").format(name=first.extra["package"], fix=g["fix"])
+                    cmd = upgrade_cmd(first.extra["ecosystem"]).format(name=first.extra["package"], fix=g["fix"])
                     w(_fix_line(st, cmd, width))
                     if g["unfixed"]:
                         w(st(f"      ({g['unfixed']} of these have no fixed version yet)\n", "grey"))
@@ -264,11 +287,13 @@ def render(result: ScanResult, out: TextIO = sys.stdout, color: bool = None, ver
                     x = f.extra
                     w("      " + st(f"commit {x['commit'][:10]} · {x.get('author', '')} · {str(x.get('date', ''))[:10]} · \"{x.get('subject', '')}\"", "magenta") + "\n")
                 meta = " · ".join(x for x in (f.rule_id, f.cwe, f"priority {f.extra['priority']}" if "priority" in f.extra else None) if x)
-                if verbose:
+                if plain:
+                    w(wrap.fill(f.extra["plain"]) + "\n")
+                elif verbose:
                     w(st(wrap.fill(f.description), "grey") + "\n")
                     for r in f.references[:3]:
                         w("      " + st(r, "under", "blue") + "\n")
-                elif f.category in ("file", "config", "web") and f.description:
+                elif f.category in ("file", "config", "web", "license") and f.description:
                     w(st(wrap.fill(f.description), "grey") + "\n")
                 if f.fix:
                     w(_fix_line(st, f.fix, width))

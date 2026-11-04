@@ -125,6 +125,11 @@ def prioritise(findings: List[Finding]) -> None:
             score += 25
         if x.get("epss") is not None:
             score += round(x["epss"] * 30)
+        if x.get("symbol_reachable") is True:
+            score += 10
+        elif x.get("symbol_reachable") is False:
+            # exact symbol data (Go/OSV) is trustworthy; names guessed from advisory text much less so
+            score -= 20 if x.get("symbol_source") == "osv" else 6
         if f.category == "dependency":
             if x.get("fixed"):
                 score += 3
@@ -134,6 +139,8 @@ def prioritise(findings: List[Finding]) -> None:
                 score -= 10
             if x.get("direct"):
                 score += 4
+        if x.get("route_auth") is False:
+            score += 10  # reachable by anonymous users
         if x.get("confidence") == "high":
             score += 10
         elif x.get("confidence") == "medium":

@@ -1,0 +1,29 @@
+{
+  "name": "vulnfind",
+  "displayName": "vulnfind",
+  "description": "Security findings from vulnfind inline in the editor: injection data flows, leaked secrets, risky config, vulnerable dependencies.",
+  "version": "0.1.0",
+  "publisher": "codingsushi79",
+  "license": "MIT",
+  "repository": "https://github.com/codingsushi79/vulnfind",
+  "engines": { "vscode": "^1.80.0" },
+  "categories": ["Linters"],
+  "main": "./extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "contributes": {
+    "commands": [
+      { "command": "vulnfind.scan", "title": "vulnfind: Scan workspace" },
+      { "command": "vulnfind.scanFull", "title": "vulnfind: Scan workspace incl. dependency CVEs" },
+      { "command": "vulnfind.clear", "title": "vulnfind: Clear findings" }
+    ],
+    "configuration": {
+      "title": "vulnfind",
+      "properties": {
+        "vulnfind.executable": { "type": "string", "default": "vulnfind", "description": "Path to the vulnfind executable." },
+        "vulnfind.scanOnSave": { "type": "boolean", "default": true, "description": "Re-scan (secrets, code, config) after saving a file." },
+        "vulnfind.scanners": { "type": "string", "default": "secrets,code,config", "description": "Scanners used for on-save scans." },
+        "vulnfind.minSeverity": { "type": "string", "enum": ["info", "low", "medium", "high", "critical"], "default": "low" }
+      }
+    }
+  }
+}

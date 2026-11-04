@@ -277,3 +277,68 @@ def hygiene_findings(manifest_files: Iterable, used: List[str]) -> List[Finding]
                     fix="Pin exact versions (pip-compile / uv pip compile / pip freeze) and use --require-hashes for deploys.",
                     cwe="CWE-1357", extra={"aliases": ["DEP-UNPINNED"], "packages": loose}))
     return out
+
+
+# ---------------------------------------------------------------- install-time scripts (npm supply-chain vector)
+
+LIFECYCLE = ("preinstall", "install", "postinstall", "prepare", "prepublish")
+SUSPICIOUS_SCRIPT = re.compile(
+    r"\bcurl\s|\bwget\s|\|\s*(?:ba|z)?sh\b|powershell|Invoke-WebRequest|iwr\s|base64\s+(?:-d|--decode)|\beval\s|"
+    r"node\s+-e\s|python3?\s+-c\s|\bnc\s+-|/dev/tcp/|chmod\s+\+x\s+/tmp|\bhttps?://(?!registry\.npmjs\.org)", re.I)
+
+
+def install_script_findings(manifest_files: Iterable, root: str) -> List[Finding]:
+    out: List[Finding] = []
+    for f in manifest_files:
+        if f.name == "package.json":
+            try:
+                scripts = (json.loads(f.text()).get("scripts") or {})
+            except ValueError:
+                continue
+            for hook in LIFECYCLE:
+                cmd = scripts.get(hook)
+                if isinstance(cmd, str) and SUSPICIOUS_SCRIPT.search(cmd):
+                    out.append(Finding(
+                        "DEP-SUSPICIOUS-INSTALL-SCRIPT", f"Install hook '{hook}' downloads or executes code", S.MEDIUM, "dependency",
+                        f.rel, snippet=f'"{hook}": "{cmd[:160]}"',
+                        description="This command runs automatically on every `npm install`, on developer machines and CI, "
+                                    "with access to tokens and SSH keys.",
+                        fix="Avoid network fetches/eval in lifecycle hooks; vendor or checksum anything you download.",
+                        cwe="CWE-829", extra={"aliases": ["DEP-SUSPICIOUS-INSTALL-SCRIPT"]}))
+        elif f.name in ("package-lock.json", "npm-shrinkwrap.json"):
+            try:
+                pkgs = json.loads(f.text()).get("packages") or {}
+            except ValueError:
+                continue
+            with_scripts = [k for k, v in pkgs.items() if k and isinstance(v, dict) and v.get("hasInstallScript")]
+            if not with_scripts:
+                continue
+            flagged = []
+            for key in with_scripts:
+                pj = os.path.join(os.path.dirname(f.path), key, "package.json")
+                try:
+                    with open(pj, encoding="utf-8") as fh:
+                        scripts = json.load(fh).get("scripts") or {}
+                except (OSError, ValueError):
+                    continue  # node_modules not installed: can only list them
+                bad = {h: scripts[h] for h in LIFECYCLE if isinstance(scripts.get(h), str) and SUSPICIOUS_SCRIPT.search(scripts[h])}
+                if bad:
+                    name = key.rsplit("node_modules/", 1)[-1]
+                    hook, cmd = next(iter(bad.items()))
+                    flagged.append(name)
+                    out.append(Finding(
+                        "DEP-SUSPICIOUS-INSTALL-SCRIPT", f"Dependency {name} runs a suspicious '{hook}' script", S.HIGH, "dependency",
+                        f.rel, snippet=f'{name}: "{hook}": "{cmd[:160]}"',
+                        description="A dependency downloads or executes code at install time - the technique used by most npm "
+                                    "malware (e.g. event-stream, ua-parser-js, the 2025 'Shai-Hulud' worm).",
+                        fix="Review the script; install with `npm ci --ignore-scripts` and allow-list packages that need build steps.",
+                        cwe="CWE-829", extra={"package": name, "aliases": ["DEP-SUSPICIOUS-INSTALL-SCRIPT"]}))
+            names = [k.rsplit("node_modules/", 1)[-1] for k in with_scripts]
+            out.append(Finding(
+                "DEP-INSTALL-SCRIPTS", f"{len(names)} dependenc{'y runs' if len(names) == 1 else 'ies run'} code at install time",
+                S.INFO, "dependency", f.rel, snippet=", ".join(names[:12]) + (" …" if len(names) > 12 else ""),
+                description="These packages declare install scripts that run automatically during `npm install`."
+                            + ("" if flagged else " Install node_modules and re-scan to inspect what they run."),
+                fix="Use `npm ci --ignore-scripts` in CI and enable scripts only for packages that need them.",
+                cwe="CWE-829", extra={"packages": names, "aliases": ["DEP-INSTALL-SCRIPTS"]}))
+    return out

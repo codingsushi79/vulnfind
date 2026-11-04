@@ -57,6 +57,9 @@ PRODUCTS: Dict[str, Tuple[str, List[Tuple[str, str]]]] = {
     "ghost": ("Ghost", [("ghost", "ghost")]),
     "mediawiki": ("MediaWiki", [("mediawiki", "mediawiki")]),
     "typo3": ("TYPO3", [("typo3", "typo3")]),
+    "node": ("Node.js", [("nodejs", "node.js")]),
+    "redis": ("Redis", [("redis", "redis")]),
+    "postgresql": ("PostgreSQL", [("postgresql", "postgresql")]),
 }
 
 DISTRO = re.compile(r"\((?:Ubuntu|Debian|CentOS|Red Hat|RHEL|Fedora|Amazon|Rocky|AlmaLinux|SUSE|Oracle|Alpine)[^)]*\)|\bel\d\b|\bdeb\d+u\d+", re.I)

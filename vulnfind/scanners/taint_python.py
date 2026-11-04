@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass, field
-from typing import Dict, FrozenSet, Iterator, List, Optional, Set, Tuple
+from typing import Dict, FrozenSet, Iterator, List, Optional, Sequence, Set, Tuple
 
 from ..models import Finding, Severity as S
 
@@ -168,6 +168,7 @@ class FuncInfo:
     is_route: bool
     param_sinks: List[Tuple[int, str, str, int, Tuple[Tuple[int, str], ...]]] = field(default_factory=list)
     returns_params: Set[int] = field(default_factory=set)
+    file: Optional[str] = None  # set for functions imported from another project module
 
 
 # ---------------------------------------------------------------- analyser
@@ -176,6 +177,7 @@ class _Analyzer:
     def __init__(self, source: str, funcs: Dict[str, FuncInfo]):
         self.source = source
         self.funcs = funcs
+        self.clean_calls: Set[Tuple[int, str]] = set()  # (line, callee) whose arguments are all proven clean
 
     def seg(self, node: ast.AST, limit: int = 70) -> str:
         try:
@@ -188,6 +190,7 @@ class _Analyzer:
     # -- entry -------------------------------------------------------------
     def run(self, body: List[ast.stmt], seeds: Dict[str, Taint], info: Optional[FuncInfo]) -> List[Hit]:
         self.state: Dict[str, Taint] = dict(seeds)
+        self.clean: Set[str] = set()  # variables proven to hold constants / sanitised values
         self.hits: List[Hit] = []
         self.info = info
         self.block(body)
@@ -225,8 +228,11 @@ class _Analyzer:
             return  # analysed separately
         if isinstance(s, ast.Assign):
             t = self.expr(s.value)
+            proven = t is None and self._is_clean(s.value)
             for tgt in s.targets:
                 self.assign(tgt, t, s.lineno)
+                if isinstance(tgt, ast.Name):
+                    (self.clean.add if proven else self.clean.discard)(tgt.id)
         elif isinstance(s, ast.AnnAssign):
             if s.value is not None:
                 self.assign(s.target, self.expr(s.value), s.lineno)
@@ -362,12 +368,17 @@ class _Analyzer:
         src = self._source(node.func) if isinstance(node.func, ast.Attribute) else None
 
         self._check_sink(node, name, last, arg_t, kw_t, recv_t)
+        if node.args and all(self._is_clean(a) for a in node.args) and all(self._is_clean(k.value) for k in node.keywords
+                                                                           if k.arg not in ("shell", "Loader", "timeout")):
+            self.clean_calls.add((node.lineno, last))
 
         if src:
             return src
         if name in SANITIZERS or last in SANITIZERS:
             return None
-        local = self.funcs.get(last) if (isinstance(node.func, ast.Name) or name.startswith(("self.", "cls."))) else None
+        local = self.funcs.get(name) if "." in name else None  # imported module function: db.run_query(...)
+        if local is None:
+            local = self.funcs.get(last) if (isinstance(node.func, ast.Name) or name.startswith(("self.", "cls."))) else None
         if local is not None:
             self._through_local(node, local, arg_t, kw_t)
             if local.returns_params:
@@ -485,10 +496,38 @@ class _Analyzer:
         for idx, cls, sink, sink_line, inner_trace in info.param_sinks:
             t = arg_t[idx] if idx < len(arg_t) else (kw_t.get(info.params[idx]) if idx < len(info.params) else None)
             if t is not None:
+                where = f"{info.file}:{sink_line}" if info.file else f"line {sink_line}"
                 t = t.step(node.lineno, f"passed to {info.name}()")
-                inner = tuple((ln, txt.replace("sink: ", "inside it: ")) for ln, txt in inner_trace)
-                t = Taint(t.origins, (t.trace + inner)[-10:])
-                self.hit(cls, node, f"{info.name}() → {sink} (line {sink_line})", t)
+                inner = []
+                for ln, txt in inner_trace:
+                    txt = txt.replace("sink: ", "→ ")
+                    # steps from another module carry their own location: "@file|text"
+                    inner.append((ln, txt if txt.startswith("@") or not info.file else f"@{info.file}|{txt}"))
+                t = Taint(t.origins, (t.trace + tuple(inner))[-10:])
+                located = ".py:" in sink or "(line " in sink
+                self.hit(cls, node, f"{info.name}() → {sink}" + ("" if located else f" ({where})"), t)
+
+    def _is_clean(self, node: ast.AST) -> bool:
+        """True when the value is provably not attacker-controlled (constants, sanitiser output, clean vars)."""
+        if isinstance(node, ast.Constant):
+            return True
+        if isinstance(node, ast.Name):
+            return node.id in self.clean
+        if isinstance(node, ast.JoinedStr):
+            return all(self._is_clean(v) for v in node.values)
+        if isinstance(node, ast.FormattedValue):
+            return self._is_clean(node.value)
+        if isinstance(node, ast.BinOp):
+            return self._is_clean(node.left) and self._is_clean(node.right)
+        if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+            return all(self._is_clean(e) for e in node.elts)
+        if isinstance(node, ast.Call):
+            name = _dotted(node.func)
+            if name in SANITIZERS or name.rsplit(".", 1)[-1] in SANITIZERS:
+                return True
+            if isinstance(node.func, ast.Attribute) and node.func.attr in STR_METHODS and self._is_clean(node.func.value):
+                return all(self._is_clean(a) for a in node.args)
+        return False
 
     def hit(self, cls: str, node: ast.AST, sink: str, t: Taint) -> None:
         self.hits.append(Hit(cls, node.lineno, getattr(node, "col_offset", 0) + 1, sink,
@@ -538,19 +577,128 @@ def _seeds(info: FuncInfo, summary_mode: bool) -> Dict[str, Taint]:
     return seeds
 
 
-def analyze(source: str, filename: str = "<file>") -> List[Hit]:
+# ---------------------------------------------------------------- cross-module summaries
+
+Summary = Dict[str, object]  # {"params": [...], "returns": [...], "sinks": [...], "file": rel}
+
+
+def module_key(rel: str) -> str:
+    key = rel[:-3] if rel.endswith(".py") else rel
+    key = key.replace("\\", "/")
+    if key.endswith("/__init__"):
+        key = key[: -len("/__init__")]
+    return key.replace("/", ".")
+
+
+def _resolve(project: Dict[str, Dict[str, Summary]], current: str, module: Optional[str], level: int) -> Optional[str]:
+    if level:
+        base = current.split(".")
+        base = base[: len(base) - level] if len(base) >= level else []
+        target = ".".join(base + ([module] if module else []))
+        return target if target in project else None
+    if not module:
+        return None
+    if module in project:
+        return module
+    matches = [k for k in project if k.endswith("." + module)]
+    return min(matches, key=len) if matches else None  # src/app/db.py imported as app.db
+
+
+def externals_for(tree: ast.Module, rel: str, project: Dict[str, Dict[str, Summary]]) -> Dict[str, FuncInfo]:
+    """Call-name -> FuncInfo for functions this module imports from other project modules."""
+    out: Dict[str, FuncInfo] = {}
+    current = module_key(rel)
+
+    def add(call_name: str, summary: Summary) -> None:
+        if summary.get("sinks") or summary.get("returns"):
+            out[call_name] = FuncInfo(None, call_name, list(summary["params"]), False, [tuple(s) for s in summary["sinks"]],
+                                      set(summary["returns"]), summary["file"])
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            target = _resolve(project, current, node.module, node.level or 0)
+            for alias in node.names:
+                local = alias.asname or alias.name
+                if target and alias.name in project[target]:
+                    add(local, project[target][alias.name])
+                sub = _resolve(project, current, (node.module + "." if node.module else "") + alias.name, node.level or 0) \
+                    if alias.name != "*" else None
+                if sub:  # from app import db  ->  db.func(...)
+                    for fname, summ in project[sub].items():
+                        add(f"{local}.{fname}", summ)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                target = _resolve(project, current, alias.name, 0)
+                if target:
+                    prefix = alias.asname or alias.name
+                    for fname, summ in project[target].items():
+                        add(f"{prefix}.{fname}", summ)
+    return out
+
+
+def _summarise(tree: ast.Module, source: str, funcs: Dict[str, FuncInfo]) -> None:
+    analyzer = _Analyzer(source, funcs)
+    for _ in range(3):
+        changed = False
+        for info in [f for f in funcs.values() if f.node is not None]:
+            before = (len(info.param_sinks), len(info.returns_params))
+            hits = analyzer.run(info.node.body, _seeds(info, True), info)
+            sinks = []
+            for h in hits:
+                for o in h.taint.origins:
+                    if o.kind == "param":
+                        sinks.append((o.param, h.cls, h.sink, h.line, h.taint.trace[-3:]))
+            info.param_sinks = list(dict.fromkeys(sinks))
+            if (len(info.param_sinks), len(info.returns_params)) != before:
+                changed = True
+        if not changed:
+            break
+
+
+def summarize(source: str, rel: str, project: Optional[Dict[str, Dict[str, Summary]]] = None) -> Dict[str, Summary]:
+    """Per-function summary of a module (top-level functions only), for cross-file analysis."""
+    try:
+        tree = ast.parse(source, filename=rel)
+    except (SyntaxError, ValueError, RecursionError):
+        return {}
+    funcs = _collect(tree)
+    if project:
+        for k, v in externals_for(tree, rel, project).items():
+            funcs.setdefault(k, v)
+    _summarise(tree, source, funcs)
+    top = {n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    return {name: {"params": info.params, "returns": sorted(info.returns_params), "sinks": info.param_sinks, "file": rel}
+            for name, info in funcs.items() if name in top and (info.param_sinks or info.returns_params)}
+
+
+def build_project(files: Sequence[Tuple[str, str]], max_files: int = 3000) -> Dict[str, Dict[str, Summary]]:
+    """Two passes over (rel, source) pairs so helper chains across modules resolve."""
+    files = list(files)[:max_files]
+    project = {module_key(rel): summarize(src, rel) for rel, src in files}
+    project = {k: v for k, v in project.items() if v}
+    if project:
+        second = {module_key(rel): summarize(src, rel, project) for rel, src in files}
+        project = {k: v for k, v in second.items() if v}
+    return project
+
+
+def analyze(source: str, filename: str = "<file>", project: Optional[Dict[str, Dict[str, Summary]]] = None,
+            clean_out: Optional[Set[Tuple[int, str]]] = None) -> List[Hit]:
     try:
         tree = ast.parse(source, filename=filename)
     except (SyntaxError, ValueError, RecursionError):
         return []
     funcs = _collect(tree)
+    if project:
+        for k, v in externals_for(tree, filename, project).items():
+            funcs.setdefault(k, v)
     analyzer = _Analyzer(source, funcs)
 
     # Summaries: which parameters reach which sinks / the return value. Iterate so
     # helper -> helper -> sink chains resolve.
     for _ in range(3):
         changed = False
-        for info in funcs.values():
+        for info in [f for f in funcs.values() if f.node is not None]:
             before = (len(info.param_sinks), len(info.returns_params))
             hits = analyzer.run(info.node.body, _seeds(info, True), info)
             sinks = []
@@ -565,11 +713,13 @@ def analyze(source: str, filename: str = "<file>") -> List[Hit]:
             break
 
     results: List[Hit] = []
-    for info in funcs.values():
+    for info in [f for f in funcs.values() if f.node is not None]:
         results += analyzer.run(info.node.body, _seeds(info, False), info)
     module_body = [s for s in tree.body if not isinstance(s, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))]
     results += analyzer.run(module_body, {}, None)
 
+    if clean_out is not None:
+        clean_out.update(analyzer.clean_calls)
     out: Dict[Tuple[int, str], Hit] = {}
     for h in results:
         if any(o.kind == "source" for o in h.taint.origins):
@@ -577,9 +727,26 @@ def analyze(source: str, filename: str = "<file>") -> List[Hit]:
     return sorted(out.values(), key=lambda h: h.line)
 
 
-def findings(source: str, rel: str) -> Iterator[Finding]:
+def _fmt_step(line: int, text: str, short: bool = False) -> str:
+    if text.startswith("@"):
+        where, _, rest = text[1:].partition("|")
+        return rest if short else f"{where}:{line}: {rest}"
+    return text if short else f"line {line}: {text}"
+
+
+# callee name -> regex rules a proven-clean call on that line makes moot
+CLEAN_SUPERSEDES = {
+    "execute": {"PY-SQL-INJECTION"}, "executemany": {"PY-SQL-INJECTION"}, "raw": {"PY-SQL-INJECTION"},
+    "system": {"PY-OS-SYSTEM"}, "popen": {"PY-OS-SYSTEM"}, "run": {"PY-SUBPROCESS-SHELL"}, "call": {"PY-SUBPROCESS-SHELL"},
+    "Popen": {"PY-SUBPROCESS-SHELL"}, "check_output": {"PY-SUBPROCESS-SHELL"}, "check_call": {"PY-SUBPROCESS-SHELL"},
+    "eval": {"PY-EVAL"}, "exec": {"PY-EVAL"}, "loads": {"PY-PICKLE"}, "mark_safe": {"PY-MARK-SAFE"}, "Markup": {"PY-MARK-SAFE"},
+}
+
+
+def findings(source: str, rel: str, project: Optional[Dict[str, Dict[str, Summary]]] = None,
+             clean_out: Optional[Set[Tuple[int, str]]] = None) -> Iterator[Finding]:
     lines = source.splitlines()
-    for h in analyze(source, rel):
+    for h in analyze(source, rel, project, clean_out):
         vc = CLASSES[h.cls]
         src = next(o for o in sorted(h.taint.origins, key=lambda o: o.line) if o.kind == "source")
         severity = vc.severity
@@ -587,9 +754,9 @@ def findings(source: str, rel: str) -> Iterator[Finding]:
         if all(o.cli for o in h.taint.origins if o.kind == "source"):
             severity = severity.lowered()
             context = "input comes from the command line / stdin (local user)"
-        flow = [f"line {ln}: {txt}" for ln, txt in h.taint.trace]
+        flow = [_fmt_step(ln, txt) for ln, txt in h.taint.trace]
         desc = (f"Untrusted data from {src.desc} (line {src.line}) reaches {h.sink} on line {h.line} "
-                f"without sanitisation. Data flow: " + " → ".join(txt for _, txt in h.taint.trace))
+                f"without sanitisation. Data flow: " + " → ".join(_fmt_step(ln, txt, short=True) for ln, txt in h.taint.trace))
         extra = {"flow": flow, "source": src.desc, "sink": h.sink, "confidence": "high"}
         if context:
             extra["context"] = context

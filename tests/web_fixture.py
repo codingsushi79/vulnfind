@@ -3,6 +3,8 @@
 Run standalone:  python3 tests/web_fixture.py 8090   then   vulnfind web http://127.0.0.1:8090 --active
 """
 
+import os
+os.environ.setdefault("VULNFIND_NO_HISTORY", "1")  # tests must not write to ~/.local/share
 import html
 import json
 import sys
@@ -24,6 +26,23 @@ INDEX = """<!doctype html><html><head><title>Shop</title>
 
 APP_JS = """(function(){var cfg={region:"us-east-1",key:"AKIAQ3EGRQFAKE7DEMO1"};window.cfg=cfg;})();
 //# sourceMappingURL=app.js.map"""
+
+
+SIGNIN = """<html><body><form action="/signin" method="post">
+<input type="email" name="email"><input type="password" name="password"><button>Sign in</button></form></body></html>"""
+
+OPENAPI = {
+    "openapi": "3.0.0", "info": {"title": "Shop", "version": "1"},
+    "components": {"securitySchemes": {"bearer": {"type": "http", "scheme": "bearer"}}},
+    "security": [{"bearer": []}],
+    "paths": {
+        "/api/users": {"get": {"summary": "list users"}},  # declared protected, but the server doesn't check
+        "/api/items/{id}": {"get": {"parameters": [{"name": "id", "in": "path", "required": True, "schema": {"type": "integer"}}]}},
+        "/api/admin/stats": {"get": {"security": []}},  # declared public - sensitive path
+        "/api/health": {"get": {"security": []}},
+        "/api/orders": {"post": {"summary": "never called"}},
+    },
+}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -51,6 +70,21 @@ class Handler(BaseHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(data)
 
+    def _cookies(self):
+        raw = self.headers.get("Cookie", "")
+        return dict(p.strip().split("=", 1) for p in raw.split(";") if "=" in p)
+
+    def do_POST(self):
+        type(self).requested.append("POST " + self.path)
+        length = int(self.headers.get("Content-Length") or 0)
+        form = dict(urllib.parse.parse_qsl(self.rfile.read(length).decode()))
+        if self.path == "/signin":
+            if form.get("email") == "alice@example.com" and form.get("password") == "s3cret-pass":
+                # keeps the pre-login sessionid (session fixation) and adds an auth cookie
+                return self._send(302, "", extra={"Location": "/dashboard", "Set-Cookie": "auth=ok; Path=/; HttpOnly"})
+            return self._send(200, SIGNIN)
+        return self._send(405, "no")
+
     def do_OPTIONS(self):
         self._send(200, "", extra={"Allow": "GET, POST, OPTIONS, TRACE, PUT"})
 
@@ -77,6 +111,28 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(302, "", extra={"Location": q.get("next", "/")})
         if path == "/login":
             return self._send(200, "<html><body>bad login</body></html>")
+        if path == "/signin":
+            return self._send(200, SIGNIN, extra={"Set-Cookie": "sessionid=pre-login-123; Path=/"})
+        if path == "/dashboard":
+            if self._cookies().get("auth") != "ok":
+                return self._send(302, "", extra={"Location": "/signin"})
+            return self._send(200, "<html><body>Welcome back! <a href='/account?tab=profile'>Account</a></body></html>")
+        if path == "/account":
+            if self._cookies().get("auth") != "ok":
+                return self._send(302, "", extra={"Location": "/signin"})
+            return self._send(200, f"<html><body>Tab: {q.get('tab', '')}</body></html>")  # reflected, only behind login
+        if path == "/openapi.json":
+            return self._send(200, json.dumps(OPENAPI), "application/json")
+        if path == "/api/users":
+            return self._send(200, json.dumps([{"id": 1, "email": "alice@example.com"}]), "application/json")
+        if path == "/api/admin/stats":
+            return self._send(200, json.dumps({"users": 10, "revenue": 1000}), "application/json")
+        if path.startswith("/api/items/"):
+            if "Authorization" not in self.headers:
+                return self._send(401, json.dumps({"error": "auth required"}), "application/json")
+            return self._send(200, json.dumps({"id": 1}), "application/json")
+        if path == "/api/health":
+            return self._send(200, json.dumps({"ok": True}), "application/json")
         if path == "/logout":
             return self._send(200, "<html><body>logged out</body></html>")
         if path == "/static/app.js":

@@ -1,0 +1,67 @@
+name: vulnfind security scan
+description: Find vulnerable dependencies, leaked secrets (incl. git history), insecure code and IaC/CI misconfigurations; upload results to GitHub code scanning.
+author: codingsushi79
+branding:
+  icon: shield
+  color: red
+inputs:
+  path:
+    description: Folder to scan
+    default: "."
+  fail-on:
+    description: Fail the job on findings at/above this severity (info, low, medium, high, critical, none)
+    default: high
+  diff-base:
+    description: On pull requests, only report issues in files changed vs this ref (empty = full scan)
+    default: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || '' }}
+  history:
+    description: Also scan git history for secrets (needs fetch-depth 0)
+    default: "false"
+  upload-sarif:
+    description: Upload results to the Security tab (needs security-events write)
+    default: "true"
+  args:
+    description: Extra vulnfind arguments
+    default: ""
+outputs:
+  grade:
+    description: Security grade (A-F)
+    value: ${{ steps.scan.outputs.grade }}
+  findings:
+    description: Number of findings
+    value: ${{ steps.scan.outputs.findings }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - name: Install vulnfind
+      shell: bash
+      run: python -m pip install --quiet "${{ github.action_path }}"
+    - id: scan
+      name: Scan
+      shell: bash
+      env:
+        VF_PATH: ${{ inputs.path }}
+        VF_FAIL_ON: ${{ inputs.fail-on }}
+        VF_DIFF: ${{ inputs.diff-base }}
+        VF_HISTORY: ${{ inputs.history }}
+        VF_ARGS: ${{ inputs.args }}
+      run: |
+        set +e
+        extra=()
+        [ -n "$VF_DIFF" ] && extra+=(--diff "$VF_DIFF")
+        [ "$VF_HISTORY" = "true" ] && extra+=(--history)
+        # shellcheck disable=SC2086
+        vulnfind "$VF_PATH" "${extra[@]}" $VF_ARGS --fail-on "$VF_FAIL_ON" --no-progress \
+          -o vulnfind.sarif -o vulnfind.json -o vulnfind.md -f github
+        code=$?
+        python -c "import json; d=json.load(open('vulnfind.json'))['summary']; print('grade=' + d['grade']); print('findings=' + str(d['total']))" >> "$GITHUB_OUTPUT"
+        cat vulnfind.md >> "$GITHUB_STEP_SUMMARY"
+        exit $code
+    - if: always() && inputs.upload-sarif == 'true'
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: vulnfind.sarif
+        category: vulnfind

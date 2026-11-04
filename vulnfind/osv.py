@@ -196,10 +196,12 @@ def _norm(name: str, ecosystem: str) -> str:
 
 def fixed_versions(vuln: dict, pkg: Package) -> List[str]:
     fixed = []
-    for aff in vuln.get("affected") or []:
-        p = aff.get("package") or {}
-        if p.get("ecosystem", "").split(":")[0] != pkg.ecosystem or _norm(p.get("name", ""), pkg.ecosystem) != _norm(pkg.name, pkg.ecosystem):
-            continue
+    affected = [a for a in vuln.get("affected") or []
+                if _norm((a.get("package") or {}).get("name", ""), pkg.ecosystem) == _norm(pkg.name, pkg.ecosystem)]
+    # Distro advisories list one entry per release ("Debian:11", "Debian:12"): prefer the exact one.
+    exact = [a for a in affected if (a.get("package") or {}).get("ecosystem") == pkg.ecosystem]
+    base = pkg.ecosystem.split(":")[0]
+    for aff in exact or [a for a in affected if (a.get("package") or {}).get("ecosystem", "").split(":")[0] == base]:
         for rng in aff.get("ranges") or []:
             if rng.get("type") == "GIT":
                 continue
@@ -222,10 +224,15 @@ def severity_of(vuln: dict) -> Tuple[Severity, Optional[float], Optional[str]]:
     entries = list(vuln.get("severity") or [])
     for aff in vuln.get("affected") or []:
         entries += aff.get("severity") or []
+    word = None
     for entry in entries:
         score = score_vector(str(entry.get("score", "")))
         if score is not None and (best is None or score > best[0]):
             best = (score, entry.get("score"))
+        elif score is None and str(entry.get("score", "")).lower() in ("negligible", "low", "medium", "moderate", "high", "critical", "important"):
+            # Ubuntu / Red Hat style priority words
+            w = {"negligible": "low", "important": "high"}.get(str(entry["score"]).lower(), str(entry["score"]).lower())
+            word = max(word or Severity.INFO, Severity.parse(w))
     db = (vuln.get("database_specific") or {}).get("severity")
     if isinstance(db, str):
         try:
@@ -242,6 +249,8 @@ def severity_of(vuln: dict) -> Tuple[Severity, Optional[float], Optional[str]]:
                 pass
     if best:
         return max(Severity.from_score(best[0]), Severity.LOW), best[0], best[1]
+    if word is not None:
+        return word, None, None
     # Malicious-package advisories carry no CVSS but are always critical.
     if vuln.get("id", "").startswith("MAL-"):
         return Severity.CRITICAL, None, None
@@ -249,7 +258,7 @@ def severity_of(vuln: dict) -> Tuple[Severity, Optional[float], Optional[str]]:
 
 
 def aliases(vuln: dict) -> List[str]:
-    ids = [vuln["id"]] + list(vuln.get("aliases") or [])
+    ids = [vuln["id"]] + list(vuln.get("aliases") or []) + list(vuln.get("upstream") or [])
     cves = [i for i in ids if i.startswith("CVE-")]
     others = [i for i in ids if not i.startswith("CVE-")]
     return list(dict.fromkeys(cves + others))

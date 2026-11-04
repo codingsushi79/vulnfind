@@ -52,6 +52,7 @@ CATEGORIES = {
     "code": "Insecure code",
     "config": "Infrastructure & CI configuration",
     "file": "Sensitive files",
+    "license": "License compliance",
     "web": "Website",
 }
 
@@ -143,6 +144,7 @@ class ScanResult:
     below_threshold: int = 0
     commits_scanned: int = 0
     pages_scanned: int = 0
+    routes: List[Any] = field(default_factory=list)  # scanners.routes.Route
     requests_made: int = 0
     warnings: List[str] = field(default_factory=list)
     scanners: List[str] = field(default_factory=list)

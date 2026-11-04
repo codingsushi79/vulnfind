@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import secrets
 import time
 import urllib.parse
@@ -34,6 +35,12 @@ class WebOptions:
     enrich: bool = True
     min_severity: Severity = Severity.INFO
     progress: Progress = NULL
+    login_url: Optional[str] = None
+    login_user_env: str = "VULNFIND_USER"
+    login_pass_env: str = "VULNFIND_PASSWORD"
+    login_success: Optional[str] = None
+    openapi: Optional[str] = None
+    browser: bool = False
 
 
 def _dedupe_sitewide(findings: List[Finding]) -> List[Finding]:
@@ -84,6 +91,16 @@ def scan_site(url: str, opts: WebOptions) -> ScanResult:
     result = ScanResult(root=url, scanners=["web"])
     raw: List[Finding] = []
 
+    if opts.login_url:  # log in first so the start URL and crawl see the authenticated site
+        from .login import login
+        p.stage("Logging in")
+        res = login(client, opts.login_url, opts.login_user_env, opts.login_pass_env, opts.login_success)
+        raw += res.findings
+        if not res.ok:
+            p.done("Login failed", ok=False)
+            raise ValueError(f"login failed: {res.message}")
+        p.done(res.message.replace(os.environ.get(opts.login_user_env, "\0"), "test user"))
+
     p.stage(f"Connecting to {urllib.parse.urlsplit(url).netloc}")
     start, first = _resolve_start(client, url, p)
     result.root = start
@@ -102,6 +119,13 @@ def scan_site(url: str, opts: WebOptions) -> ScanResult:
                                 f"Certificate verification failed: {client.tls_error}.", "Install a valid certificate for this hostname.", "CWE-295"))
 
         seeds = paths.sitemap_urls(client, base) if opts.max_pages > 1 else []
+        api_calls: set = set()
+        if opts.browser:
+            from . import browser
+            p.stage("Rendering JavaScript in headless Chromium")
+            links, _, api_calls = browser.render([start], start, headers=opts.headers, cookies=client.cookies)
+            seeds += sorted(links)
+            p.done(f"Browser found {len(links)} rendered link(s) and {len(api_calls)} API call(s)")
         p.stage("Crawling site", total=opts.max_pages)
         pages, fetched = crawl.crawl(client, start, opts.max_pages, on_page=lambda pg: p.advance(1, urllib.parse.urlsplit(pg.url).path or "/"),
                                      extra_seeds=seeds)
@@ -124,6 +148,21 @@ def scan_site(url: str, opts: WebOptions) -> ScanResult:
             errors += checks.error_checks(resp)
         raw += _dedupe_sitewide(errors)
         p.done("Checked security headers, cookies, CORS, mixed content and error pages")
+
+        if opts.browser and api_calls:
+            raw.append(checks.F("WEB-API-INVENTORY", f"Front-end calls {len(api_calls)} API endpoint(s)", Severity.INFO, start,
+                                "Endpoints observed while rendering the site; make sure each enforces auth and validates input: "
+                                + ", ".join(sorted(api_calls)[:20]), "Review these endpoints (or scan them with --openapi).",
+                                endpoints=sorted(api_calls)))
+
+        if opts.openapi:
+            from . import api
+            spec, src = api.load_spec(client, opts.openapi)
+            n_ops = sum(1 for v in (spec.get("paths") or {}).values() if isinstance(v, dict) and "get" in v)
+            p.stage("Testing API operations from the OpenAPI spec (GET only, unauthenticated)", total=n_ops or None)
+            api_findings, tested = api.scan_api(client, spec, start, src)
+            raw += api_findings
+            p.done(f"Tested {tested} API operation(s) · {len(api_findings)} issue(s)")
 
         if opts.paths:
             p.stage("Probing for exposed files & admin endpoints", total=len(paths.PROBES))

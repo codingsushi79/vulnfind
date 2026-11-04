@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import http.client
+import re
 import socket
 import ssl
 import threading
@@ -80,6 +81,8 @@ class Client:
     verify_tls: bool = True
     requests_made: int = 0
     tls_error: Optional[str] = None
+    use_jar: bool = False  # keep cookies the site sets (enabled after a login)
+    cookies: Dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self._lock = threading.Lock()
@@ -87,6 +90,15 @@ class Client:
         self._ctx_verified = ssl.create_default_context()
         # vulnfind:ignore PY-TLS-VERIFY-OFF - deliberately inspecting untrusted/legacy TLS; never used to send secrets
         self._ctx_unverified = ssl._create_unverified_context()
+
+    def _remember(self, headers) -> None:
+        if not self.use_jar:
+            return
+        for k, v in _cookie_pairs(headers).items():
+            if v is None:
+                self.cookies.pop(k, None)
+            else:
+                self.cookies[k] = v
 
     def _wait_turn(self) -> None:
         with self._lock:
@@ -105,6 +117,9 @@ class Client:
         self._wait_turn()
         hdrs = {"User-Agent": f"vulnfind/{__version__} (security scanner)", "Accept": "*/*"}
         hdrs.update(self.headers)
+        if self.use_jar and self.cookies:
+            jar = "; ".join(f"{k}={v}" for k, v in self.cookies.items())
+            hdrs["Cookie"] = (hdrs["Cookie"] + "; " + jar) if hdrs.get("Cookie") else jar
         hdrs.update(headers or {})
         req = urllib.request.Request(url, data=data, method=method, headers=hdrs)
         insecure = not self.verify_tls or self.tls_error is not None
@@ -114,6 +129,7 @@ class Client:
         try:
             with opener.open(req, timeout=self.timeout) as resp:
                 body = resp.read(max_body) if method != "HEAD" else b""
+                self._remember(resp.headers)
                 return Response(resp.geturl(), resp.status, resp.headers, body, time.monotonic() - start)
         except urllib.error.HTTPError as e:  # 3xx/4xx/5xx still carry useful headers & bodies
             try:
@@ -122,6 +138,7 @@ class Client:
                 body = b""
             finally:
                 e.close()
+            self._remember(e.headers)
             return Response(url, e.code, e.headers, body, time.monotonic() - start)
         except urllib.error.URLError as e:
             reason = e.reason
@@ -135,6 +152,16 @@ class Client:
             return Response(url, 0, Message(), b"", time.monotonic() - start, error="timeout")
         except (OSError, http.client.HTTPException, ValueError) as e:
             return Response(url, 0, Message(), b"", time.monotonic() - start, error=f"{e.__class__.__name__}: {e}")
+
+
+def _cookie_pairs(headers) -> Dict[str, Optional[str]]:
+    out: Dict[str, Optional[str]] = {}
+    for raw in (headers.get_all("Set-Cookie") or []) if headers is not None else []:
+        name, _, rest = raw.partition("=")
+        value = rest.split(";", 1)[0]
+        expired = re.search(r"(?i);\s*(?:max-age=0|expires=thu, 01 jan 1970)", raw)
+        out[name.strip()] = None if expired or value == "" else value
+    return out
 
 
 def origin(url: str) -> str:

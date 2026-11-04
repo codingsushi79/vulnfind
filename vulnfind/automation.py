@@ -18,7 +18,8 @@ CONFIG_KEYS = {
     "scanners": str, "skip": str, "fail_on": str, "min_severity": str, "exclude": list, "output": list,
     "offline": bool, "no_cache": bool, "no_dev": bool, "no_test_downgrade": bool, "baseline": str, "history": bool,
     "history_depth": int, "no_deep": bool, "no_enrich": bool, "jobs": int, "notify": list, "notify_always": bool,
-    "include_vendor": bool, "no_gitignore": bool, "limit": int, "format": str,
+    "include_vendor": bool, "no_gitignore": bool, "limit": int, "format": str, "rules": list,
+    "no_health": bool, "all_deps": bool,
 }
 
 DEFAULT_CONFIG = {

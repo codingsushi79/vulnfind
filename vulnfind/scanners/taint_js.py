@@ -151,8 +151,29 @@ def _strip_comment(line: str) -> str:
     return line
 
 
-def findings(text: str, rel: str) -> Iterator[Finding]:
+_JS_KEYWORDS = {"true", "false", "null", "undefined", "new", "await", "typeof", "this", "return", "const", "let", "var", "of", "in"}
+
+
+def _js_identifiers(segment: str) -> set:
+    """Identifiers that carry values into this expression (template ${...} parts kept, string text dropped)."""
+    seg = re.sub(r"`([^`]*)`", lambda m: " ".join(re.findall(r"\$\{([^}]*)\}", m.group(1))), segment)
+    seg = _STRINGS.sub('""', seg)
+    seg = re.sub(r"(?<![\w$])[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+\s*\(", "(", seg)  # obj.method( is a call, not a value
+    names = re.findall(r"(?<![\w$.])[A-Za-z_$][\w$]*(?![\w$])(?!\s*\()", seg)
+    return {n for n in names if n not in _JS_KEYWORDS and not re.fullmatch(r"[A-Z_][A-Z0-9_]*", n)}
+
+
+def _complete(segment: str) -> bool:
+    """Only a fully visible expression can prove a value clean: multi-line templates/strings/calls can't."""
+    s = segment.strip()
+    if not s or s.count("`") % 2 or s.count("(") > s.count(")") or s.count("[") > s.count("]") or s.count("{") > s.count("}"):
+        return False
+    return not s.endswith(("+", "(", ",", "=", ".", "&&", "||", "?", ":"))  # odd backtick count already caught
+
+
+def findings(text: str, rel: str, clean_out: Optional[set] = None) -> Iterator[Finding]:
     tainted: Dict[str, Var] = {}
+    clean: set = set()
     depth = 0
     seen = set()
     lines = text.splitlines()
@@ -205,9 +226,12 @@ def findings(text: str, rel: str) -> Iterator[Finding]:
             if src and not SANITIZER.search(rhs):
                 for t in targets:
                     tainted[t] = Var(src.source, src.line, (src.trace + ((lineno, f"{t} = …"),))[-8:], depth)
+                    clean.discard(t)
             else:
+                proven = _complete(rhs) and (bool(SANITIZER.search(rhs)) or (not src and not (_js_identifiers(rhs) - clean)))
                 for t in targets:
                     tainted.pop(t, None)
+                    (clean.add if proven else clean.discard)(t)
 
         # ---- sinks
         for sink in SINKS:
@@ -228,7 +252,11 @@ def findings(text: str, rel: str) -> Iterator[Finding]:
                 if SANITIZER.search(segment):
                     continue
                 src = uses(segment)
-                if not src or (lineno, sink.key) in seen:
+                if not src:
+                    if clean_out is not None and _complete(segment) and not (_js_identifiers(segment) - clean):
+                        clean_out.add((lineno, sink.key))
+                    continue
+                if (lineno, sink.key) in seen:
                     continue
                 seen.add((lineno, sink.key))
                 trace = src.trace + ((lineno, f"sink: {sm.group(0).strip()}…"),)

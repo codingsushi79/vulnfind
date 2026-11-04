@@ -1,0 +1,14 @@
+# Labelled benchmark case (lives at .github/workflows/ci.yml in the corpus).
+on:
+  pull_request_target:
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}  # expect: GHA-PWN-REQUEST
+      - uses: some/action@v1  # expect: GHA-UNPINNED-ACTION
+      - uses: pinned/action@0123456789abcdef0123456789abcdef01234567  # safe
+      - run: echo "${{ github.event.issue.title }}"  # expect: GHA-SCRIPT-INJECTION
+      - run: echo "${{ github.sha }}"  # safe

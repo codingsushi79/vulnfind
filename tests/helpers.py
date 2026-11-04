@@ -1,4 +1,6 @@
 import os
+
+os.environ.setdefault("VULNFIND_NO_HISTORY", "1")  # tests must not write to ~/.local/share
 import tempfile
 
 from vulnfind.walker import SourceFile

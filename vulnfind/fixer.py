@@ -17,7 +17,7 @@ from typing import Dict, List, Optional, Tuple
 
 from .models import Finding, ScanResult
 from .osv import pick_target
-from .scanners.deps import UPGRADE_CMD
+from .scanners.deps import upgrade_cmd
 
 
 @dataclass
@@ -120,7 +120,7 @@ def plan(result: ScanResult) -> Plan:
         if eco == "Go" and name == "stdlib":
             pl.manual.append(f"Go toolchain {version} -> {fix}: update the `go`/`toolchain` line in {manifest} and your CI image")
             continue
-        cmd = UPGRADE_CMD.get(eco, "upgrade {name} to {fix}").format(name=name, fix=fix)
+        cmd = upgrade_cmd(eco).format(name=name, fix=fix)
         pl.commands.append(cmd + (f"   # in {mdir}" if mdir else ""))
 
     for pj_rel, pins in overrides.items():

@@ -6,7 +6,7 @@ import os
 import re
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
-from .. import osv
+from .. import osv, reach
 from ..depgraph import declared_names
 from ..manifests import NPM_LOCKS, parse_requirements, parser_for
 from ..models import Finding, Package, Severity
@@ -55,7 +55,17 @@ def collect_packages(files: Sequence[SourceFile], warnings: List[str]) -> Tuple[
     return packages, used
 
 
+def upgrade_cmd(ecosystem: str) -> str:
+    """Command template for an ecosystem; distro ecosystems look like "Debian:12"."""
+    return UPGRADE_CMD.get(ecosystem) or UPGRADE_CMD.get(ecosystem.split(":")[0], "upgrade {name} to {fix}")
+
+
 UPGRADE_CMD = {
+    "Debian": "rebuild on an updated base image or `apt-get install --only-upgrade` the {name} binaries (fixed in {fix})",
+    "Ubuntu": "rebuild on an updated base image or `apt-get install --only-upgrade` the {name} binaries (fixed in {fix})",
+    "Alpine": "apk upgrade {name}  (fixed in {fix}), or rebuild on a newer alpine tag",
+    "AlmaLinux": "dnf update {name}  (fixed in {fix})",
+    "Rocky Linux": "dnf update {name}  (fixed in {fix})",
     "npm": "npm install {name}@{fix}",
     "PyPI": 'pip install "{name}>={fix}"',
     "Go": "go get {name}@v{fix}",
@@ -98,7 +108,7 @@ def build_findings(packages: Sequence[Package], results: Dict[Tuple[str, str, st
                 if len(refs) >= 4:
                     break
             if fix:
-                fix_text = f"Upgrade {pkg.name} {pkg.version} -> {fix}:  " + UPGRADE_CMD.get(pkg.ecosystem, "upgrade to {fix}").format(name=pkg.name, fix=fix)
+                fix_text = f"Upgrade {pkg.name} {pkg.version} -> {fix}:  " + upgrade_cmd(pkg.ecosystem).format(name=pkg.name, fix=fix)
             elif v["id"].startswith("MAL-"):
                 fix_text = f"Remove {pkg.name} immediately - it is a known malicious package. Rotate any credentials on machines that installed it."
             else:
@@ -111,6 +121,8 @@ def build_findings(packages: Sequence[Package], results: Dict[Tuple[str, str, st
                 extra={"package": pkg.name, "version": pkg.version, "ecosystem": pkg.ecosystem, "fixed": fix,
                        "aliases": ids, "cvss": score, "vector": vector, "dev": pkg.dev, "purl": pkg.purl,
                        "direct": pkg.direct, "via": pkg.via, "imported": pkg.imported,
+                       "vulnerable_symbols": reach.symbols_for(v, pkg.name, pkg.ecosystem),
+                       "symbol_source": reach.symbol_source(v) or "text",
                        "published": v.get("published", "")[:10] or None},
             ))
     return findings, suppressed

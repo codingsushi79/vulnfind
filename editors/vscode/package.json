@@ -3,7 +3,7 @@
   "displayName": "vulnfind",
   "description": "Security findings from vulnfind inline in the editor: injection data flows, leaked secrets, risky config, vulnerable dependencies.",
   "version": "0.1.0",
-  "publisher": "codingsushi79",
+  "publisher": "SashaBaranov",
   "license": "MIT",
   "repository": "https://github.com/codingsushi79/vulnfind",
   "engines": { "vscode": "^1.80.0" },
